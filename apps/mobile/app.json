@@ -1,0 +1,43 @@
+{
+  "expo": {
+    "name": "Living Nutrition",
+    "slug": "living-nutrition",
+    "scheme": "livingnutrition",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Living Nutrition uses the camera to help you log meals and scan barcodes after your confirmation."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Living Nutrition can import meal photos from your library when you choose one."
+        }
+      ]
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.livingnutrition.app"
+    },
+    "android": {
+      "package": "com.livingnutrition.app",
+      "permissions": [
+        "CAMERA"
+      ]
+    },
+    "extra": {
+      "apiBaseUrl": "http://localhost:8000/api/v1",
+      "eas": {
+        "projectId": "replace-with-eas-project-id"
+      }
+    }
+  }
+}

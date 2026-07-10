@@ -1,0 +1,10 @@
+{
+  "name": "@living-nutrition/api-client",
+  "version": "0.1.0",
+  "private": true,
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "dependencies": {
+    "@living-nutrition/shared-types": "0.1.0"
+  }
+}

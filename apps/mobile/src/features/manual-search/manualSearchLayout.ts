@@ -1,0 +1,17 @@
+import { spacing } from "@living-nutrition/design-tokens";
+
+const floatingTabsClearance = 92;
+
+export function stickyLogBottomOffset({
+  safeAreaBottom,
+  keyboardBottomInset,
+}: {
+  safeAreaBottom: number;
+  keyboardBottomInset: number;
+}) {
+  if (keyboardBottomInset > 0) {
+    return keyboardBottomInset + spacing.sm;
+  }
+
+  return Math.max(safeAreaBottom, spacing.sm) + floatingTabsClearance;
+}

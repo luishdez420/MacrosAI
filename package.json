@@ -1,0 +1,54 @@
+{
+  "name": "living-nutrition",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/mobile",
+    "packages/*"
+  ],
+  "scripts": {
+    "mobile": "npm --workspace apps/mobile run start",
+    "mobile:go": "npm --workspace apps/mobile run go",
+    "mobile:clear": "npm --workspace apps/mobile run start:clear",
+    "mobile:ios": "npm --workspace apps/mobile run ios",
+    "mobile:android": "npm --workspace apps/mobile run android",
+    "mobile:typecheck": "npm --workspace apps/mobile run typecheck",
+    "mobile:test": "npm --workspace apps/mobile run test",
+    "dev:phone": "node scripts/dev-phone.js",
+    "dev:phone:clear": "node scripts/dev-phone.js --clear",
+    "dev:phone:tunnel": "node scripts/dev-phone.js --tunnel",
+    "ports": "sh -c 'lsof -nP -iTCP:8000 -iTCP:8081 -sTCP:LISTEN || true'",
+    "api": "cd apps/api && AUTO_MIGRATE_ON_STARTUP=true uvicorn app.main:app --host 0.0.0.0 --port 8000",
+    "api:reload": "cd apps/api && AUTO_MIGRATE_ON_STARTUP=true uvicorn app.main:app --reload --host 0.0.0.0 --port 8000",
+    "api:test": "cd apps/api && pytest",
+    "typecheck": "npm run mobile:typecheck"
+  },
+  "dependencies": {
+    "expo": "54.0.35",
+    "expo-router": "6.0.24",
+    "react": "19.1.0",
+    "react-dom": "19.1.0"
+  },
+  "devDependencies": {
+    "babel-preset-expo": "~54.0.11",
+    "debug": "^4.4.3",
+    "metro-runtime": "0.83.3",
+    "typescript": "^5.8.3"
+  },
+  "overrides": {
+    "@expo/metro-runtime": "6.1.2",
+    "expo": "54.0.35",
+    "expo-asset": "12.0.13",
+    "expo-constants": "18.0.13",
+    "expo-file-system": "19.0.23",
+    "expo-font": "14.0.12",
+    "expo-keep-awake": "15.0.8",
+    "expo-linking": "8.0.12",
+    "expo-modules-core": "3.0.30",
+    "expo-router": "6.0.24",
+    "postcss": "8.5.10",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "uuid": "11.1.1"
+  }
+}
