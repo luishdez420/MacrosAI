@@ -4,6 +4,20 @@ Last updated: 2026-07-21
 
 This document tracks verified issues and risks. See [[Current State]], [[Architecture]], and [[Roadmap]].
 
+## Hosted CI image scan and Android prebuild needed a workflow correction
+
+Severity: Medium
+
+Status: Resolved in repository; hosted rerun pending
+
+Affected area: GitHub Actions deployment gate and Android E2E workflow
+
+Description: The container scan originally started Trivy in a separate container and asked it to inspect the API image through an unavailable Docker daemon. The Android E2E workflow also requested Gradle caching before Expo generated Android Gradle files, causing `actions/setup-java` to fail its cache lookup. The CI workflow now exports the built API image to an archive before scanning it, and Android Java setup no longer attempts the pre-prebuild Gradle cache lookup.
+
+User or engineering impact: The failed checks prevented Render from satisfying its `checksPass` automatic-deploy trigger even though the application build itself had not reached Render.
+
+Recommended resolution: Push this workflow correction, confirm the GitHub Actions API-container and Android E2E jobs complete successfully, then retry or allow the Render Blueprint deployment to continue. Keep the scan blocking high/critical findings; do not bypass the check to deploy.
+
 ## Free Render preview is intentionally incomplete
 
 Severity: Medium

@@ -83,4 +83,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: docker build --pull --tag living-nutrition-api:ci apps/api
-      - run: docker run --rm aquasec/trivy:0.68.1 image --exit-code 1 --ignore-unfixed --severity HIGH,CRITICAL living-nutrition-api:ci
+      - name: Export API image for isolated scanning
+        run: docker save --output /tmp/living-nutrition-api.tar living-nutrition-api:ci
+      - name: Scan API image for high and critical vulnerabilities
+        # Trivy runs in its own container. Scan the exported archive instead
+        # of relying on a Docker socket from inside that container.
+        run: >-
+          docker run --rm
+          --volume /tmp/living-nutrition-api.tar:/tmp/living-nutrition-api.tar:ro
+          aquasec/trivy:0.72.0 image
+          --input /tmp/living-nutrition-api.tar
+          --exit-code 1
+          --ignore-unfixed
+          --severity HIGH,CRITICAL
+          --skip-version-check
