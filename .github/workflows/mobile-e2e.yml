@@ -1,26 +1,6 @@
-name: Mobile E2E (Android)
+name: Mobile E2E (Android, manual)
 
 on:
-  pull_request:
-    paths:
-      - ".github/workflows/mobile-e2e.yml"
-      - "apps/api/**"
-      - "apps/mobile/**"
-      - "packages/api-client/**"
-      - "packages/design-tokens/**"
-      - "packages/shared-types/**"
-      - "packages/validation/**"
-  push:
-    branches:
-      - main
-    paths:
-      - ".github/workflows/mobile-e2e.yml"
-      - "apps/api/**"
-      - "apps/mobile/**"
-      - "packages/api-client/**"
-      - "packages/design-tokens/**"
-      - "packages/shared-types/**"
-      - "packages/validation/**"
   workflow_dispatch:
 
 concurrency:

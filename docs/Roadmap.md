@@ -234,10 +234,10 @@ Major tasks:
 
 - Add mobile component test runner. Initial Jest/React Native Testing Library setup exists for food provenance and presentation/helper coverage.
 - Test manual amount forms and keyboard dismissal.
-- Test barcode no-match recovery. Component coverage and helper/cooldown coverage exist; a fixture-only Maestro smoke flow now covers typed no-match recovery and a subsequent successful lookup. The Android workflow runs automatically for relevant pull requests and `main` changes, with hosted-emulator validation still pending. Manual Search now also has component/API/fixture coverage for a provider `503` and retryable recovery instead of an empty-results misrepresentation.
+- Test barcode no-match recovery. Component coverage and helper/cooldown coverage exist; a fixture-only Maestro smoke flow covers typed no-match recovery and a subsequent successful lookup. The Android workflow is manual-only while its hosted emulator remains unproven, so it does not block preview deployment. Manual Search now also has component/API/fixture coverage for a provider `503` and retryable recovery instead of an empty-results misrepresentation.
 - Test meal confirmation cards.
 - Add navigation tests.
-- Record a successful hosted Android-emulator run, then make the existing path-scoped Android fixture workflow a required branch-protection check if it remains stable.
+- Choose and validate a stable Android device-test environment, record repeated successful hosted runs, then restore path-scoped Android fixture execution and make it a required branch-protection check if it remains stable.
 - Extend device coverage from the current manual log, barcode recovery/log, camera confirmation, Meal Builder, custom-food logging, meal edit/delete, fixture queue-replay, and local-profile-deletion flows to true offline/reconnect, Clerk authentication/recovery/deletion, and custom-food editing.
 - Keep the existing CI release gates green: high-severity Node audit, Python third-party audit, PostgreSQL migration application, API container build/scan, CodeQL, mobile typecheck, Jest, Ruff, and backend tests.
 

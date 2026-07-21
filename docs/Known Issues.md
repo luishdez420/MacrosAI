@@ -4,19 +4,19 @@ Last updated: 2026-07-21
 
 This document tracks verified issues and risks. See [[Current State]], [[Architecture]], and [[Roadmap]].
 
-## Hosted CI image scan and Android E2E setup needed workflow corrections
+## Android E2E emulator remains unproven and is manual-only
 
 Severity: Medium
 
-Status: Resolved in repository; hosted rerun pending
+Status: Open; removed from automatic preview gating
 
-Affected area: GitHub Actions deployment gate and Android E2E workflow
+Affected area: Android fixture E2E workflow and hosted-device coverage
 
-Description: The container scan originally started Trivy in a separate container and asked it to inspect the API image through an unavailable Docker daemon. The Android E2E workflow also requested Gradle caching before Expo generated Android Gradle files, causing `actions/setup-java` to fail its cache lookup. Its emulator action executes the supplied test script with POSIX `sh`, so Bash-only `set -o pipefail` also failed before the app launched. A hosted retry then showed the runner did not have `/dev/kvm` permission, which forced unsupported software emulation and left ADB offline until the emulator boot timeout. The CI workflow now exports the built API image to an archive before scanning it, Android Java setup no longer attempts the pre-prebuild Gradle cache lookup, the emulator script uses portable `set -eu` because it has no pipelines, and the workflow provisions KVM permissions before requiring hardware acceleration.
+Description: The container-scan and Java prebuild configuration failures are fixed in the regular CI workflow. The separate Android Maestro workflow still cannot complete a stable hosted emulator boot after using POSIX-compatible script setup and the runner-recommended `/dev/kvm` permission configuration. It is retained as a `workflow_dispatch` diagnostic workflow with fixture-only providers, but no longer runs on every push or pull request and therefore cannot block the free Render preview through its `checksPass` trigger.
 
-User or engineering impact: The failed checks prevented Render from satisfying its `checksPass` automatic-deploy trigger even though the application build itself had not reached Render.
+User or engineering impact: Fixture device coverage is not yet trusted as a release gate. The regular CI workflow continues to require mobile type checks/Jest, API tests/linting, migrations, dependency audits, container scanning, and CodeQL before Render can deploy the free preview.
 
-Recommended resolution: Push this workflow correction, confirm the GitHub Actions API-container and Android E2E jobs complete successfully, then retry or allow the Render Blueprint deployment to continue. Keep the scan blocking high/critical findings; do not bypass the check to deploy.
+Recommended resolution: Choose and validate a stable device-test environment before restoring automatic E2E execution. Options include a compatible GitHub-hosted emulator configuration validated from a clean run, a self-hosted runner with managed KVM, or an approved device-farm service. Restore path-scoped automatic execution and consider branch protection only after repeated stable fixture runs. Do not weaken the regular CI security, migration, test, or container-scan gates.
 
 ## Free Render preview is intentionally incomplete
 
