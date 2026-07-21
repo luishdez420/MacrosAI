@@ -36,6 +36,15 @@ async def analyze_nutrition_label(
     image_base64: str,
     barcode: str | None = None,
 ) -> NutritionLabelAnalysis:
+    if not settings.ai_features_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "Nutrition-label analysis is unavailable in this free preview. "
+                "Enter the label values manually instead."
+            ),
+        )
+
     if not settings.openai_api_key:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

@@ -193,6 +193,15 @@ async def identify_foods_with_openai(
     *,
     reference_plate_diameter_mm: float | None = None,
 ) -> DetectedMeal:
+    if not settings.ai_features_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "Camera analysis is unavailable in this free preview. "
+                "Use manual search, barcode lookup, or a custom food instead."
+            ),
+        )
+
     if settings.e2e_fixture_mode:
         # Exercise request validation in E2E while avoiding a paid vision call.
         # The returned item still has to pass provider matching and the normal

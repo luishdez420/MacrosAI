@@ -262,6 +262,14 @@ async def create_nutrition_label_analysis(
     current_user: CurrentUser = Depends(ensure_current_user),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> NutritionLabelAnalysis:
+    if not settings.ai_features_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "Nutrition-label analysis is unavailable in this free preview. "
+                "Enter the label values manually instead."
+            ),
+        )
     resolved_key = resolve_idempotency_key(idempotency_key)
     reservation = reserve_idempotency_key(
         db,

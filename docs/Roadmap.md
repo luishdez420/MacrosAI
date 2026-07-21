@@ -264,7 +264,8 @@ Major tasks:
 
 - Configure deployment environments.
 - Use [[deployment/release-runbook|the release and beta runbook]] to select managed providers, record environment ownership, validate migrations/workers, and capture physical-device release evidence.
-- Apply the selected Render + Cloudflare R2 path from [[deployment/render-r2-setup|the concrete operator guide]] once managed accounts, trusted ingress ranges, and secrets are available.
+- Validate the no-cost Render personal preview from [[deployment/render-free-preview-setup|its operator guide]] against a Clerk development tenant and physical device. Treat sleeping services, temporary data, and disabled AI/image-retention flows as acceptance constraints, not production readiness.
+- Apply the selected paid Render + Cloudflare R2 path from [[deployment/render-r2-setup|the concrete operator guide]] only after managed accounts, trusted ingress ranges, secrets, and an explicit budget decision are available.
 - Provision the implemented privacy-minimized Sentry reporting hooks with separate managed API/mobile DSNs, an alert policy, and a release-symbol/source-map upload path.
 - Maintain the implemented CI container, migration, dependency-audit, and CodeQL gates; preview and production deployments still require real cloud validation.
 - Maintain the repository-hygiene CI guard that rejects tracked Python cache artifacts and the pull-request documentation checklist.

@@ -45,6 +45,9 @@ class Settings(BaseSettings):
     e2e_fixture_mode: bool = False
     openai_api_key: str | None = None
     openai_model: str = "gpt-4o-mini"
+    # A free or local preview can keep all manual/provider-backed flows online
+    # while blocking image features before any billable vision request occurs.
+    ai_features_enabled: bool = True
     usda_api_key: str = "DEMO_KEY"
     open_food_facts_base_url: AnyHttpUrl = "https://world.openfoodfacts.org"
     nutrition_provider_timeout_seconds: float = Field(default=8.0, gt=0, le=60)

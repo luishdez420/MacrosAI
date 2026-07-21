@@ -4,7 +4,7 @@ Last updated: 2026-07-21
 
 Related: [[release-runbook|Release And Beta Runbook]], [[edge-security-runbook|Edge Security Runbook]], [[../Architecture|Architecture]], [[../Known Issues|Known Issues]].
 
-The selected production topology is Render for the API, workers, PostgreSQL, and Key Value store, plus Cloudflare R2 for private meal images. The repository's `render.yaml` creates the Render resources and references managed values; it contains no production credentials.
+The selected production topology is Render for the API, workers, PostgreSQL, and Key Value store, plus Cloudflare R2 for private meal images. The repository's `render.production.yaml` creates the paid Render resources and references managed values; it contains no production credentials. The root `render.yaml` is intentionally a no-cost personal preview and is documented separately in [[render-free-preview-setup|Free Render Preview Setup]].
 
 ## Before Creating The Blueprint
 
@@ -18,9 +18,9 @@ Cloudflare R2 automatically encrypts stored objects at rest. It does not support
 
 ## Create Render Resources
 
-1. Connect the Git repository in Render and create a Blueprint from the root `render.yaml` file.
+1. Connect the Git repository in Render and create a Blueprint from `render.production.yaml`.
    After authenticating the official Render CLI and selecting the intended workspace, run
-   `render blueprints validate render.yaml` before applying it. The CLI performs schema, semantic,
+   `render blueprints validate render.production.yaml` before applying it. The CLI performs schema, semantic,
    and existing-resource conflict validation that local YAML parsing cannot provide.
 2. Select the intended region before the first deployment. The Blueprint uses `oregon` by default; change every Render resource together if a different region is required.
 3. Keep the `living-nutrition-postgres` and `living-nutrition-redis` public allowlists empty. Render private-network service connections continue to work while public datastore connections are blocked.

@@ -161,6 +161,12 @@ def test_optional_migration_deadline_accepts_an_empty_environment_value() -> Non
     assert settings.local_account_migration_deadline is None
 
 
+def test_preview_can_disable_billable_ai_features() -> None:
+    settings = Settings(environment="preview", ai_features_enabled=False)
+
+    assert settings.ai_features_enabled is False
+
+
 def test_normalizes_standard_managed_postgres_urls_for_psycopg() -> None:
     assert Settings(database_url="postgresql://user:pass@example.test/database").database_url == (
         "postgresql+psycopg://user:pass@example.test/database"

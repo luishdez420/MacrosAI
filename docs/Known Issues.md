@@ -4,6 +4,20 @@ Last updated: 2026-07-21
 
 This document tracks verified issues and risks. See [[Current State]], [[Architecture]], and [[Roadmap]].
 
+## Free Render preview is intentionally incomplete
+
+Severity: Medium
+
+Status: Accepted constraint
+
+Affected area: Hosted personal testing
+
+Description: The root `render.yaml` provisions only a free sleeping API and temporary free Postgres database. It runs memory-only rate limiting and provider-circuit state, and has no workers, Redis, R2, Sentry, audit delivery, or production monitoring. `AI_FEATURES_ENABLED=false` rejects camera and nutrition-label analysis before images are stored, quota is reserved, or OpenAI is called. The paid production topology remains separately preserved in `render.production.yaml`.
+
+User or engineering impact: Manual/provider-backed flows can be tested without a Render charge, but cold starts are expected, data is not production durable, and camera/label analysis plus retained image workflows are unavailable.
+
+Recommended resolution: Use [[deployment/render-free-preview-setup|the free preview guide]] only for personal validation. Move to [[deployment/render-r2-setup|the paid production topology]] only after an explicit budget decision and the existing security, privacy, proxy, and operational gates are satisfied.
+
 ## Sentry reporting is implemented but not provisioned for production
 
 Severity: Medium

@@ -3,7 +3,7 @@ import hashlib
 import hmac
 from datetime import UTC, datetime, timedelta
 
-from fastapi import APIRouter, Depends, Header, Request, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
 from sqlalchemy.orm import Session
 
 from app.analysis.meal_analyzer import analyze_meal_photo, sanitize_base64_images
@@ -47,6 +47,19 @@ from app.storage import PrivateImageStorage, build_private_image_storage
 
 router = APIRouter()
 MEAL_ANALYSIS_JOB_OPERATION = "meal-analysis.job.create"
+
+
+def require_ai_features_enabled() -> None:
+    """Block preview deployments before they retain images or reserve quota."""
+
+    if not settings.ai_features_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "Camera analysis is unavailable in this free preview. "
+                "Use manual search, barcode lookup, or a custom food instead."
+            ),
+        )
 
 
 @router.get("/{job_id}", response_model=AnalysisJobResponse)
@@ -133,6 +146,8 @@ async def create_meal_analysis_job(
     provider request and the user must still confirm the later result before a
     meal is persisted.
     """
+
+    require_ai_features_enabled()
 
     resolved_key = resolve_idempotency_key(idempotency_key, analysis_request.idempotency_key)
     sanitized_images = sanitize_base64_images(analysis_request.analysis_images)
@@ -229,6 +244,7 @@ async def create_meal_analysis(
 ) -> MealAnalysisResult:
     # Analysis is paid, sensitive work. Require the same authenticated account
     # boundary as the later confirmation and meal-persistence workflow.
+    require_ai_features_enabled()
     resolved_key = resolve_idempotency_key(idempotency_key, analysis_request.idempotency_key)
     payload = durable_job_fingerprint(
         analysis_request.analysis_images,
