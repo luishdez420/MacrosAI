@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import DateTime, Float, ForeignKey, String, Text
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
@@ -11,10 +11,15 @@ from app.models.food import json_variant
 
 class Meal(Base):
     __tablename__ = "meals"
+    __table_args__ = (
+        UniqueConstraint("user_id", "idempotency_key", name="uq_meals_user_idempotency_key"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     name: Mapped[str] = mapped_column(String(256))
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    meal_type: Mapped[str] = mapped_column(String(32), default="meal")
     logged_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -28,7 +33,7 @@ class Meal(Base):
         back_populates="meal",
         cascade="all, delete-orphan",
         passive_deletes=True,
-        order_by="MealItem.created_at",
+        order_by="MealItem.sort_order, MealItem.created_at",
     )
     images: Mapped[list["MealImage"]] = relationship(
         back_populates="meal",
@@ -49,6 +54,7 @@ class MealItem(Base):
     )
     food_id: Mapped[str] = mapped_column(String(192))
     display_name: Mapped[str] = mapped_column(String(512))
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
     consumed_grams: Mapped[float] = mapped_column(Float)
     serving_quantity: Mapped[float | None] = mapped_column(Float, nullable=True)
     serving_unit: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -93,6 +99,10 @@ class MealImage(Base):
     width: Mapped[int | None] = mapped_column(nullable=True)
     height: Mapped[int | None] = mapped_column(nullable=True)
     metadata_removed: Mapped[bool] = mapped_column(default=True)
+    retention_deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deletion_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    deletion_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     meal: Mapped[Meal] = relationship(back_populates="images")

@@ -1,0 +1,17 @@
+appId: com.livingnutrition.app
+---
+- launchApp:
+    clearState: true
+- tapOn: "Scan a packaged-food barcode"
+- tapOn: "Barcode number"
+- inputText: "999999999999"
+- tapOn: "Find barcode"
+- assertVisible: "No reliable match found"
+- tapOn: "Type barcode"
+- tapOn: "Barcode number"
+- eraseText
+- inputText: "000000000001"
+- tapOn: "Find barcode"
+- assertVisible: "Living Nutrition fixture protein bar"
+- tapOn: "Log packaged food"
+- assertVisible: "Packaged food logged."

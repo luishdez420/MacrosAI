@@ -1,0 +1,162 @@
+name: Mobile E2E (Android)
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/mobile-e2e.yml"
+      - "apps/api/**"
+      - "apps/mobile/**"
+      - "packages/api-client/**"
+      - "packages/design-tokens/**"
+      - "packages/shared-types/**"
+      - "packages/validation/**"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/mobile-e2e.yml"
+      - "apps/api/**"
+      - "apps/mobile/**"
+      - "packages/api-client/**"
+      - "packages/design-tokens/**"
+      - "packages/shared-types/**"
+      - "packages/validation/**"
+  workflow_dispatch:
+
+concurrency:
+  group: mobile-e2e-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  android-maestro:
+    name: Fixture smoke flows
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      DATABASE_URL: sqlite+pysqlite:////tmp/living-nutrition-e2e.sqlite
+      AUTO_MIGRATE_ON_STARTUP: "true"
+      ALLOW_DEV_AUTH: "true"
+      IDENTITY_PROVIDER: local
+      E2E_FIXTURE_MODE: "true"
+      EXPO_PUBLIC_API_BASE_URL: http://10.0.2.2:8000/api/v1
+      EXPO_PUBLIC_E2E_FIXTURE_MODE: "true"
+      EXPO_NO_TELEMETRY: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+      - run: npm ci
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e "apps/api[dev]"
+
+      - name: Build the fixture-only Android development app
+        working-directory: apps/mobile
+        run: |
+          npx expo prebuild --platform android --clean --no-install
+          cd android
+          ./gradlew assembleDebug --no-daemon
+
+      - name: Install Maestro
+        run: |
+          curl --fail --silent --show-error --location https://get.maestro.mobile.dev | bash
+          echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
+
+      - name: Start fixture API, worker, and Metro
+        run: |
+          set -euo pipefail
+          uvicorn app.main:app --host 0.0.0.0 --port 8000 > /tmp/living-api.log 2>&1 &
+          echo $! > /tmp/living-api.pid
+          python -m app.workers.meal_analysis > /tmp/living-analysis-worker.log 2>&1 &
+          echo $! > /tmp/living-analysis-worker.pid
+          (
+            cd apps/mobile
+            npx expo start --dev-client --localhost --non-interactive > /tmp/living-metro.log 2>&1
+          ) &
+          echo $! > /tmp/living-metro.pid
+
+          wait_for_url() {
+            local name="$1"
+            local url="$2"
+            local log_file="$3"
+
+            for attempt in $(seq 1 60); do
+              if curl --fail --silent "$url" > /dev/null; then
+                echo "$name is ready after ${attempt}s."
+                return 0
+              fi
+              sleep 1
+            done
+
+            echo "$name did not become ready: $url"
+            cat "$log_file" || true
+            return 1
+          }
+
+          wait_for_url "Fixture API" "http://127.0.0.1:8000/api/v1/health/ready" /tmp/living-api.log
+          wait_for_url "Metro" "http://127.0.0.1:8081/status" /tmp/living-metro.log
+
+          for pid_file in /tmp/living-api.pid /tmp/living-analysis-worker.pid /tmp/living-metro.pid; do
+            if ! kill -0 "$(cat "$pid_file")" 2>/dev/null; then
+              echo "Service exited before the emulator started: $pid_file"
+              cat /tmp/living-api.log /tmp/living-analysis-worker.log /tmp/living-metro.log || true
+              exit 1
+            fi
+          done
+
+      - name: Run Maestro fixture smoke flows
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          script: |
+            set -euo pipefail
+            adb reverse tcp:8081 tcp:8081
+            adb logcat -c
+            adb logcat -v time > /tmp/living-android.log 2>&1 &
+            echo $! > /tmp/living-android-logcat.pid
+            adb install -r apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk
+            adb shell am start -W -a android.intent.action.VIEW \
+              -d 'livingnutrition://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8081'
+            for attempt in $(seq 1 60); do
+              if adb shell pidof com.livingnutrition.app | grep -q .; then
+                break
+              fi
+              sleep 1
+            done
+            adb shell pidof com.livingnutrition.app | grep -q .
+            maestro test apps/mobile/e2e/maestro
+
+      - name: Upload E2E diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mobile-e2e-diagnostics
+          path: |
+            /tmp/living-api.log
+            /tmp/living-analysis-worker.log
+            /tmp/living-metro.log
+            /tmp/living-android.log
+          if-no-files-found: ignore
+
+      - name: Stop local services
+        if: always()
+        run: |
+          for pid_file in /tmp/living-api.pid /tmp/living-analysis-worker.pid /tmp/living-metro.pid /tmp/living-android-logcat.pid; do
+            if [ -f "$pid_file" ]; then
+              kill "$(cat "$pid_file")" || true
+            fi
+          done

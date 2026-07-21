@@ -191,7 +191,9 @@ export function buildUserDataExportSummary(exportData: UserDataExport) {
   return [
     `${exportData.meals.length} meals`,
     `${exportData.weightEntries.length} weight entries`,
+    `${exportData.hydrationEntries.length} hydration entries`,
     `${exportData.goals.length} goals`,
+    `${exportData.recipes.length} recipes`,
     `${exportData.favoriteFoods.length} favorites`,
     `${exportData.recentFoods.length} recent foods`,
     `${exportData.customFoods.length} custom foods`,

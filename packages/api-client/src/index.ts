@@ -1,5 +1,6 @@
 import type {
   AuthSessionList,
+  ClerkProfileProvision,
   CustomFoodCreate,
   DiaryDay,
   FoodCorrectionReport,
@@ -8,15 +9,27 @@ import type {
   FoodDetail,
   FoodSearchResponse,
   FoodSearchResult,
+  HydrationEntry,
+  HydrationEntryUpdate,
   LocalAuthRequest,
+  LocalAccountMigration,
+  PasswordChange,
   MealAnalysisResult,
+  MealAnalysisJob,
   MealCreate,
+  MealImageAccess,
   MealRead,
   MealUpdate,
   MonthlyInsights,
+  RangeInsights,
   NutritionLabelAnalysis,
   NutritionGoal,
   NutritionGoalUpdate,
+  RecipeCreate,
+  RecipeLogResult,
+  RecipeRead,
+  RecipeUpdate,
+  SecurityActivityList,
   UserPreference,
   UserPreferenceUpdate,
   UserDataExport,
@@ -30,19 +43,51 @@ type ApiClientOptions = {
   baseUrl: string;
   getAuthToken?: () => Promise<string | undefined>;
   refreshAuthToken?: () => Promise<string | undefined>;
+  getClientLabel?: () => string | undefined;
+  onUnexpectedServerError?: (error: ApiClientError) => void;
 };
 
 type HealthResponse = {
   ok: boolean;
 };
 
-export function createApiClient({ baseUrl, getAuthToken, refreshAuthToken }: ApiClientOptions) {
+type ApiErrorDetails = {
+  message?: string;
+  code?: string;
+  requestId?: string;
+};
+
+export class ApiClientError extends Error {
+  readonly status: number;
+  readonly code?: string;
+  readonly requestId?: string;
+
+  constructor(
+    message: string,
+    options: { status: number; code?: string; requestId?: string }
+  ) {
+    super(message);
+    this.name = "ApiClientError";
+    this.status = options.status;
+    this.code = options.code;
+    this.requestId = options.requestId;
+  }
+}
+
+export function createApiClient({
+  baseUrl,
+  getAuthToken,
+  refreshAuthToken,
+  getClientLabel,
+  onUnexpectedServerError,
+}: ApiClientOptions) {
   async function request<T>(
     path: string,
     init?: RequestInit,
     canRefresh = true
   ): Promise<T> {
     const token = await getAuthToken?.();
+    const clientLabel = getClientLabel?.();
     let response: Response;
 
     try {
@@ -51,12 +96,18 @@ export function createApiClient({ baseUrl, getAuthToken, refreshAuthToken }: Api
         headers: {
           "Content-Type": "application/json",
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          ...(clientLabel ? { "X-Living-Nutrition-Client": clientLabel } : {}),
           ...init?.headers,
         },
       });
     } catch (error) {
-      throw new Error(
-        `Cannot reach the nutrition API at ${baseUrl}. Make sure the API server is running and your phone is on the same Wi-Fi as this Mac.`
+      if (isAbortError(error)) {
+        throw error;
+      }
+
+      throw new ApiClientError(
+        "Cannot reach the nutrition API. Make sure the API server is running and your phone is on the same Wi-Fi as this Mac.",
+        { status: 0, code: "network_unavailable" }
       );
     }
 
@@ -74,7 +125,22 @@ export function createApiClient({ baseUrl, getAuthToken, refreshAuthToken }: Api
 
     if (!response.ok) {
       const body = await response.json().catch(() => undefined);
-      throw new Error(formatApiError(body) || `Request failed with HTTP ${response.status}`);
+      const details = parseApiError(body);
+      const error = new ApiClientError(details.message || `Request failed with HTTP ${response.status}`, {
+        status: response.status,
+        code: details.code,
+        requestId: details.requestId,
+      });
+      if (response.status >= 500) {
+        // Reporting receives only normalized error metadata, never the path,
+        // query, request body, auth token, or response payload.
+        try {
+          onUnexpectedServerError?.(error);
+        } catch {
+          // Observability must never alter the caller's error/retry behavior.
+        }
+      }
+      throw error;
     }
 
     if (response.status === 204) {
@@ -100,11 +166,32 @@ export function createApiClient({ baseUrl, getAuthToken, refreshAuthToken }: Api
         body: JSON.stringify(input),
       });
     },
+    changePassword(input: PasswordChange) {
+      return request<UserSession>("/auth/password", {
+        method: "POST",
+        body: JSON.stringify(input),
+      });
+    },
     getSession() {
       return request<UserSession>("/auth/session");
     },
+    provisionClerkProfile(input: ClerkProfileProvision) {
+      return request<UserSession>("/auth/provision", {
+        method: "POST",
+        body: JSON.stringify(input),
+      });
+    },
+    migrateLocalAccount(input: LocalAccountMigration) {
+      return request<UserSession>("/auth/migrate-local-account", {
+        method: "POST",
+        body: JSON.stringify(input),
+      });
+    },
     listAuthSessions() {
       return request<AuthSessionList>("/auth/sessions");
+    },
+    listSecurityActivity() {
+      return request<SecurityActivityList>("/auth/activity");
     },
     revokeAuthSession(sessionId: string) {
       return request<void>(`/auth/sessions/${encodeURIComponent(sessionId)}`, {
@@ -134,6 +221,9 @@ export function createApiClient({ baseUrl, getAuthToken, refreshAuthToken }: Api
     getGoal() {
       return request<NutritionGoal | null>("/goals");
     },
+    listGoalHistory() {
+      return request<NutritionGoal[]>("/goals/history");
+    },
     updateGoal(input: NutritionGoalUpdate) {
       return request<NutritionGoal>("/goals", {
         method: "PUT",
@@ -161,6 +251,20 @@ export function createApiClient({ baseUrl, getAuthToken, refreshAuthToken }: Api
     },
     deleteWeightEntry(loggedOn: string) {
       return request<void>(`/weight/${encodeURIComponent(loggedOn)}`, {
+        method: "DELETE",
+      });
+    },
+    getHydrationEntry(loggedOn: string) {
+      return request<HydrationEntry | null>(`/hydration/${encodeURIComponent(loggedOn)}`);
+    },
+    saveHydrationEntry(loggedOn: string, input: HydrationEntryUpdate) {
+      return request<HydrationEntry>(`/hydration/${encodeURIComponent(loggedOn)}`, {
+        method: "PUT",
+        body: JSON.stringify(input),
+      });
+    },
+    deleteHydrationEntry(loggedOn: string) {
+      return request<void>(`/hydration/${encodeURIComponent(loggedOn)}`, {
         method: "DELETE",
       });
     },
@@ -214,9 +318,10 @@ export function createApiClient({ baseUrl, getAuthToken, refreshAuthToken }: Api
       const search = new URLSearchParams({ limit: String(limit) });
       return request<FoodSearchResponse>(`/foods/custom?${search.toString()}`);
     },
-    createCustomFood(input: CustomFoodCreate) {
+    createCustomFood(input: CustomFoodCreate, options?: { idempotencyKey?: string }) {
       return request<FoodDetail>("/foods/custom", {
         method: "POST",
+        headers: options?.idempotencyKey ? { "Idempotency-Key": options.idempotencyKey } : undefined,
         body: JSON.stringify(input),
       });
     },
@@ -226,15 +331,27 @@ export function createApiClient({ baseUrl, getAuthToken, refreshAuthToken }: Api
         body: JSON.stringify(input),
       });
     },
-    analyzeNutritionLabel(input: { imageBase64: string; barcode?: string }) {
+    deleteCustomFood(foodId: string) {
+      return request<void>(`/foods/custom/${encodeURIComponent(foodId)}`, {
+        method: "DELETE",
+      });
+    },
+    analyzeNutritionLabel(
+      input: { imageBase64: string; barcode?: string },
+      options?: { idempotencyKey?: string }
+    ) {
       return request<NutritionLabelAnalysis>("/foods/label-analysis", {
         method: "POST",
+        headers: options?.idempotencyKey
+          ? { "Idempotency-Key": options.idempotencyKey }
+          : undefined,
         body: JSON.stringify(input),
       });
     },
-    createMeal(input: MealCreate) {
+    createMeal(input: MealCreate, options?: { idempotencyKey?: string }) {
       return request<MealRead>("/meals", {
         method: "POST",
+        headers: options?.idempotencyKey ? { "Idempotency-Key": options.idempotencyKey } : undefined,
         body: JSON.stringify(input),
       });
     },
@@ -245,6 +362,16 @@ export function createApiClient({ baseUrl, getAuthToken, refreshAuthToken }: Api
     getMeal(mealId: string) {
       return request<MealRead>(`/meals/${encodeURIComponent(mealId)}`);
     },
+    getMealImageAccess(mealId: string, imageId: string) {
+      return request<MealImageAccess>(
+        `/meals/${encodeURIComponent(mealId)}/images/${encodeURIComponent(imageId)}/access`
+      );
+    },
+    deleteMealImage(mealId: string, imageId: string) {
+      return request<void>(`/meals/${encodeURIComponent(mealId)}/images/${encodeURIComponent(imageId)}`, {
+        method: "DELETE",
+      });
+    },
     updateMeal(mealId: string, input: MealUpdate) {
       return request<MealRead>(`/meals/${encodeURIComponent(mealId)}`, {
         method: "PATCH",
@@ -254,6 +381,36 @@ export function createApiClient({ baseUrl, getAuthToken, refreshAuthToken }: Api
     deleteMeal(mealId: string) {
       return request<void>(`/meals/${encodeURIComponent(mealId)}`, {
         method: "DELETE",
+      });
+    },
+    listRecipes() {
+      return request<RecipeRead[]>("/recipes");
+    },
+    getRecipe(recipeId: string) {
+      return request<RecipeRead>(`/recipes/${encodeURIComponent(recipeId)}`);
+    },
+    createRecipe(input: RecipeCreate, options?: { idempotencyKey?: string }) {
+      return request<RecipeRead>("/recipes", {
+        method: "POST",
+        headers: options?.idempotencyKey ? { "Idempotency-Key": options.idempotencyKey } : undefined,
+        body: JSON.stringify(input),
+      });
+    },
+    updateRecipe(recipeId: string, input: RecipeUpdate) {
+      return request<RecipeRead>(`/recipes/${encodeURIComponent(recipeId)}`, {
+        method: "PATCH",
+        body: JSON.stringify(input),
+      });
+    },
+    deleteRecipe(recipeId: string) {
+      return request<void>(`/recipes/${encodeURIComponent(recipeId)}`, {
+        method: "DELETE",
+      });
+    },
+    logRecipe(recipeId: string, options?: { idempotencyKey?: string }) {
+      return request<RecipeLogResult>(`/recipes/${encodeURIComponent(recipeId)}/log`, {
+        method: "POST",
+        headers: options?.idempotencyKey ? { "Idempotency-Key": options.idempotencyKey } : undefined,
       });
     },
     getDiary(date: string) {
@@ -267,18 +424,56 @@ export function createApiClient({ baseUrl, getAuthToken, refreshAuthToken }: Api
       const query = month ? `?${new URLSearchParams({ month }).toString()}` : "";
       return request<MonthlyInsights>(`/insights/monthly${query}`);
     },
-    analyzeMealPhoto(input: { imageBase64: string; idempotencyKey?: string }) {
+    getRangeInsights(startDate: string, endDate: string) {
+      const query = new URLSearchParams({ startDate, endDate });
+      return request<RangeInsights>(`/insights/range?${query.toString()}`);
+    },
+    analyzeMealPhoto(input: {
+      imageBase64?: string;
+      imagesBase64?: string[];
+      referencePlateDiameterMm?: number;
+      idempotencyKey?: string;
+    }, signal?: AbortSignal) {
+      const { idempotencyKey, ...payload } = input;
       return request<MealAnalysisResult>("/meal-analysis", {
         method: "POST",
-        body: JSON.stringify(input),
+        signal,
+        headers: idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined,
+        body: JSON.stringify(payload),
+      });
+    },
+    createMealAnalysisJob(input: {
+      imageBase64?: string;
+      imagesBase64?: string[];
+      referencePlateDiameterMm?: number;
+      idempotencyKey?: string;
+    }, signal?: AbortSignal) {
+      const { idempotencyKey, ...payload } = input;
+      return request<MealAnalysisJob>("/meal-analysis/jobs", {
+        method: "POST",
+        signal,
+        headers: idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined,
+        body: JSON.stringify(payload),
+      });
+    },
+    getMealAnalysisJob(jobId: string, signal?: AbortSignal) {
+      return request<MealAnalysisJob>(`/meal-analysis/${encodeURIComponent(jobId)}`, { signal });
+    },
+    cancelMealAnalysisJob(jobId: string) {
+      return request<MealAnalysisJob>(`/meal-analysis/${encodeURIComponent(jobId)}`, {
+        method: "DELETE",
       });
     },
   };
 }
 
-function formatApiError(body: unknown) {
+function isAbortError(error: unknown) {
+  return error instanceof Error && error.name === "AbortError";
+}
+
+function parseApiError(body: unknown): ApiErrorDetails {
   if (!body || typeof body !== "object") {
-    return undefined;
+    return {};
   }
 
   const errorBody = body as { detail?: unknown; error?: unknown; message?: unknown };
@@ -288,17 +483,15 @@ function formatApiError(body: unknown) {
       ? (envelope as { code?: unknown; message?: unknown; requestId?: unknown })
       : undefined;
   const value = typedEnvelope?.message || errorBody.message || errorBody.error || errorBody.detail;
-  const suffix =
-    typedEnvelope?.code || typedEnvelope?.requestId
-      ? ` (${[typedEnvelope.code, typedEnvelope.requestId].filter(Boolean).join(" · ")})`
-      : "";
+  const code = typeof typedEnvelope?.code === "string" ? typedEnvelope.code : undefined;
+  const requestId = typeof typedEnvelope?.requestId === "string" ? typedEnvelope.requestId : undefined;
 
   if (typeof value === "string") {
-    return `${value}${suffix}`;
+    return { message: value, code, requestId };
   }
 
   if (Array.isArray(value)) {
-    return value
+    const message = value
       .map((item) => {
         if (typeof item === "string") {
           return item;
@@ -310,8 +503,9 @@ function formatApiError(body: unknown) {
 
         return JSON.stringify(item);
       })
-      .join(" ") + suffix;
+      .join(" ");
+    return { message, code, requestId };
   }
 
-  return value ? `${JSON.stringify(value)}${suffix}` : undefined;
+  return value ? { message: JSON.stringify(value), code, requestId } : { code, requestId };
 }

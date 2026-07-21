@@ -49,7 +49,11 @@ docs/
 
 Create a real root `.env` file for local secrets. The API loads `/Users/luishernandez/Documents/New project/.env` first, then optionally `apps/api/.env` if you need API-specific overrides. `.env.example` files are documentation templates only.
 
-For a production environment, set `ENVIRONMENT=production`, use a unique `JWT_SECRET` of at least 32 characters, and set both `ALLOW_DEV_AUTH=false` and `ALLOW_LEGACY_LOCAL_TOKENS=false`. Production configuration refuses to start with the development secret or either compatibility mode enabled. The current `RATE_LIMIT_*` settings protect credential and paid image-analysis endpoints only within one API process; use a distributed policy before running multiple replicas.
+For production, configure Clerk first: set `EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY` for the mobile build, then set `ENVIRONMENT=production`, `IDENTITY_PROVIDER=clerk`, `CLERK_JWKS_URL`, `CLERK_ISSUER`, a unique `JWT_SECRET` of at least 32 characters, both `ALLOW_DEV_AUTH=false` and `ALLOW_LEGACY_LOCAL_TOKENS=false`, `RATE_LIMIT_BACKEND=redis`, and `NUTRITION_PROVIDER_CIRCUIT_BREAKER_BACKEND=redis` with a reachable `REDIS_URL`. Production configuration also requires `METRICS_ENABLED=true`, a managed `METRICS_BEARER_TOKEN` for the protected root `/metrics` scrape, and an HTTPS `SENTRY_DSN` for backend error reporting. Production configuration refuses to start without Clerk verification settings, metrics protection, Sentry configuration, either compatibility mode, a disabled limiter, the local in-memory limiter, or memory-only provider-circuit state. The `RATE_LIMIT_*` settings protect public catalog search, credential, and paid image-analysis endpoints through an atomic shared Redis rolling window: public `GET /foods/search` uses the dedicated IP-only `RATE_LIMIT_FOOD_SEARCH_*` budget, while analysis uses an IP budget and, for a verified account, a separate `RATE_LIMIT_ANALYSIS_USER_*` budget in the same decision. Local phone preview deliberately uses `RATE_LIMIT_BACKEND=memory` and an in-memory provider circuit.
+
+To enable mobile error reporting in an installed build, set the public ingestion settings `EXPO_PUBLIC_SENTRY_DSN` and `EXPO_PUBLIC_SENTRY_ENVIRONMENT` in the EAS build environment. These are not secret API keys. Do not place a `SENTRY_AUTH_TOKEN`, server credential, or release-upload token in the mobile bundle.
+
+For production, set `TRUSTED_PROXY_CIDRS` to the CIDRs of only the selected load balancer or reverse proxy. The API reads `X-Forwarded-For` only from those direct peers; otherwise it limits by the direct socket address. This is required in production and must be chosen with the deployment provider, not guessed from a client header.
 
 The local API also records minimal audit events for account/session lifecycle, export, and account deletion. These events intentionally exclude credentials, tokens, nutrition entries, image data, and free-form request payloads. Audit-log review, retention, and immutable external delivery remain production follow-up work.
 
@@ -84,8 +88,19 @@ npm run api
 Run the mobile app with a development build:
 
 ```bash
-npm run mobile
+npm run dev:device
 ```
+
+Before the first physical-device run, create and install the development build:
+
+```bash
+cd apps/mobile
+npx eas-cli@latest login
+npx eas-cli@latest init
+npx eas-cli@latest build --profile development --platform ios
+```
+
+`eas init` links the app to your Expo account and writes the real EAS project ID; the repository intentionally does not contain a placeholder project ID. Install the internal iOS build from the EAS link, then return to the repository root and run `npm run dev:device`. Wait for the bundle prewarm message before opening the build on the phone. `dev:phone` remains the Expo Go path; `dev:device` uses the installed development client and the same LAN API discovery.
 
 For Expo Go preview on a personal phone:
 
@@ -95,7 +110,7 @@ npm run dev:phone
 
 This starts or reuses the FastAPI server on `0.0.0.0:8000`, forces Expo/Metro to advertise your Mac's LAN IP, and starts Expo Go mode so your phone can reach both the JavaScript bundle and the nutrition API from the same Wi-Fi network.
 
-For phone preview, the script uses a local SQLite database at `apps/api/.local/living-nutrition-dev.sqlite` unless `DATABASE_URL` is exported in your shell or you run with `DEV_PHONE_USE_POSTGRES=1`. Production and Docker development still use PostgreSQL and Alembic migrations.
+For phone preview, the script uses a local SQLite database at `apps/api/.local/living-nutrition-dev.sqlite` unless `DATABASE_URL` is exported in your shell or you run with `DEV_PHONE_USE_POSTGRES=1`. On startup it safely creates missing preview tables and repairs the explicitly supported legacy columns before Expo starts. Production and Docker development still use PostgreSQL and Alembic migrations.
 
 The script also prewarms the iOS bundle locally. Wait until you see:
 
@@ -133,7 +148,7 @@ If `npm run dev:phone` says port `8000` or `8081` is already in use, inspect the
 npm run ports
 ```
 
-If port `8000` is already running a healthy Living Nutrition API with the current database schema, `npm run dev:phone` now reuses it automatically. If something is listening but `/api/v1/health` does not report `database.schemaReady: true`, stop that process before starting phone dev again.
+If port `8000` is already running a healthy Living Nutrition API with the current database schema, `npm run dev:phone` now reuses it automatically, starts its bounded local meal-analysis worker, and then starts Expo. If something is listening but `/api/v1/health` does not report `database.schemaReady: true`, stop that process before starting phone dev again.
 
 Expo SDK 54 should be run with an active LTS Node version such as Node 22. Node 26 can fail while loading Expo CLI dependencies.
 
@@ -164,4 +179,3 @@ The app must show source, confidence, and editable portions. Camera-generated re
 Manual logging is the current accuracy anchor. When a user selects a food and enters grams, ounces, or a source serving with a verified gram weight, the app calculates a preview from per-100g data, then saves a meal item snapshot through `POST /api/v1/meals`. Ounces are converted to grams for calculation while the entered unit is retained in the snapshot. Household or volume servings without a verified gram weight are not converted or treated as 100g. The home dashboard reads `GET /api/v1/diary/{date}` so totals survive reloads and do not silently change if an external provider updates a food record later.
 
 Natural entry is also available from Home for short, explicitly weighted lists such as `150 g grilled chicken; 2 oz cooked rice`. It searches provider records and requires a user confirmation for every item. It intentionally rejects cups, pieces, and unweighted descriptions because mass cannot be safely inferred.
-

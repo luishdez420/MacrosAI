@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import math
 import re
 
 from app.core.config import settings
@@ -93,9 +94,11 @@ def _safe_float(value: object) -> float | None:
         return None
 
     try:
-        return float(str(value).strip().replace(",", "."))
+        parsed = float(str(value).strip().replace(",", "."))
     except ValueError:
         return None
+
+    return parsed if math.isfinite(parsed) else None
 
 
 def _quality_flags(product: dict, nutrients: NutrientsPer100g) -> list[str]:
@@ -116,6 +119,15 @@ def _quality_flags(product: dict, nutrients: NutrientsPer100g) -> list[str]:
     if missing_required:
         flags.append("incomplete_per_100g")
 
+    invalid_required = [
+        field
+        for field in required
+        if nutriments.get(field) not in (None, "")
+        and _safe_float(nutriments.get(field)) is None
+    ]
+    if invalid_required:
+        flags.append("invalid_per_100g_value")
+
     if not energy_is_consistent(nutrients):
         flags.append("energy_macro_mismatch")
 
@@ -125,8 +137,17 @@ def _quality_flags(product: dict, nutrients: NutrientsPer100g) -> list[str]:
     if nutrients.calories_kcal > 1500:
         flags.append("possible_kj_confusion")
 
-    if product.get("serving_size") and serving_size == 0:
+    has_serving_value = bool(product.get("serving_size")) or product.get("serving_quantity") not in (
+        None,
+        "",
+    )
+    if has_serving_value and serving_size == 0:
         flags.append("zero_serving_size")
+
+    # A serving can still be displayed as descriptive text, but it must not be
+    # treated as a gram-based calculation shortcut without a verified mass.
+    if has_serving_value and serving_size is None:
+        flags.append("unverified_serving_basis")
 
     if serving_grams and _has_serving_conflict(nutriments, nutrients, serving_grams):
         flags.append("serving_per_100g_conflict")
@@ -154,13 +175,22 @@ def _has_negative_nutrient_values(nutriments: dict) -> bool:
 
 
 def _confidence_for_product(quality_flags: list[str]) -> ConfidenceTier:
-    if not quality_flags:
-        return ConfidenceTier.medium
+    critical_flags = {
+        "missing_name",
+        "incomplete_per_100g",
+        "invalid_per_100g_value",
+        "energy_macro_mismatch",
+        "negative_nutrient",
+        "possible_kj_confusion",
+    }
 
-    if "missing_name" in quality_flags or "incomplete_per_100g" in quality_flags:
+    if any(flag in critical_flags for flag in quality_flags):
         return ConfidenceTier.low
 
-    return ConfidenceTier.low
+    # Open Food Facts is community-contributed, so even a complete record is
+    # intentionally capped at medium confidence. Serving warnings do not make
+    # per-100g values unusable when the user enters grams directly.
+    return ConfidenceTier.medium
 
 
 def _serving_basis(product: dict) -> tuple[float | None, str | None, float | None]:

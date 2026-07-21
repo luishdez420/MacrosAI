@@ -1,0 +1,11 @@
+appId: com.livingnutrition.app
+---
+- launchApp:
+    clearState: true
+- tapOn: "Profile"
+- tapOn: "Open data controls"
+- tapOn: "Review profile deletion"
+- tapOn: "Type DELETE to confirm Living Nutrition profile deletion"
+- inputText: "DELETE"
+- tapOn: "Delete Living Nutrition profile"
+- assertVisible: "Add to today"

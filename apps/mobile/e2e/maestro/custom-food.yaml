@@ -1,0 +1,28 @@
+appId: com.livingnutrition.app
+---
+- launchApp:
+    clearState: true
+- tapOn: "Scan a packaged-food barcode"
+- tapOn: "Barcode number"
+- inputText: "999999999999"
+- tapOn: "Find barcode"
+- assertVisible: "No reliable match found"
+- tapOn: "Create custom"
+- tapOn: "Food name"
+- inputText: "Fixture custom oats"
+- tapOn: "Serving grams"
+- inputText: "100"
+- tapOn: "Serving name"
+- inputText: "bowl"
+- tapOn: "Calories"
+- inputText: "250"
+- tapOn: "Protein (g)"
+- inputText: "10"
+- tapOn: "Carbs (g)"
+- inputText: "40"
+- tapOn: "Fat (g)"
+- inputText: "5"
+- tapOn: "Amount eaten (grams)"
+- inputText: "100"
+- tapOn: "Create and log food"
+- assertVisible: "Meal saved."

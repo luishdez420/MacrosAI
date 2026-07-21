@@ -3,6 +3,10 @@ from abc import ABC, abstractmethod
 from app.schemas.food import FoodSearchResult
 
 
+class NutritionProviderUnavailableError(RuntimeError):
+    """Raised when no configured nutrition provider can complete a live lookup."""
+
+
 class NutritionProvider(ABC):
     name: str
 

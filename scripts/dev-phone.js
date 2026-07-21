@@ -9,6 +9,7 @@ const mobileRoot = path.join(repoRoot, "apps", "mobile");
 const apiRoot = path.join(repoRoot, "apps", "api");
 const useTunnel = process.argv.includes("--tunnel");
 const clearMetroCache = process.argv.includes("--clear");
+const useDevelopmentClient = process.argv.includes("--dev-client");
 const useConfiguredDatabase =
   Boolean(process.env.DATABASE_URL)
   || process.env.DEV_PHONE_USE_POSTGRES === "1"
@@ -51,6 +52,7 @@ if (lanHost) {
 
 console.log("\nLiving Nutrition phone dev server");
 console.log(`Metro host mode: ${hostMode}`);
+console.log(`Mobile client: ${useDevelopmentClient ? "development build" : "Expo Go"}`);
 console.log(`Metro cache: ${clearMetroCache ? "clear before start" : "preserve for faster phone loads"}`);
 console.log(
   `API database: ${useConfiguredDatabase ? "configured DATABASE_URL/Postgres" : "local SQLite phone preview"}`
@@ -135,10 +137,22 @@ async function main() {
     }
 
     start("api", "npm", ["run", "api"], { cwd: repoRoot });
-    await sleep(1500);
+    await waitForApiHealth();
   }
 
-  const expoArgs = ["expo", "start", "--go", "--host", hostMode, "--port", metroPort];
+  // Camera confirmation now creates a durable server job. Keep its bounded
+  // worker alongside Metro during phone preview so queued scans are reviewed.
+  start("meal-analysis-worker", "npm", ["run", "api:analysis-worker"], { cwd: repoRoot });
+
+  const expoArgs = [
+    "expo",
+    "start",
+    useDevelopmentClient ? "--dev-client" : "--go",
+    "--host",
+    hostMode,
+    "--port",
+    metroPort,
+  ];
 
   if (clearMetroCache) {
     expoArgs.push("--clear");
@@ -163,6 +177,24 @@ async function apiIsHealthy() {
   } catch {
     return false;
   }
+}
+
+async function waitForApiHealth() {
+  const attempts = 20;
+
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (await apiIsHealthy()) {
+      console.log(`API schema is ready at ${localApiHealthUrl}`);
+      return;
+    }
+
+    await sleep(500);
+  }
+
+  throw new Error(
+    `The API did not become schema-ready at ${localApiHealthUrl}. ` +
+      "Check the API logs above; Expo was not started to avoid a phone-side server error."
+  );
 }
 
 async function metroIsHealthy() {
@@ -215,7 +247,11 @@ async function prewarmIosBundle() {
     const bytes = await response.arrayBuffer();
     const seconds = Math.round((Date.now() - startedAt) / 100) / 10;
     console.log(`iOS bundle ready: ${Math.round(bytes.byteLength / 1024)} KB in ${seconds}s.`);
-    console.log("Now scan the Expo QR code from Expo Go.");
+    console.log(
+      useDevelopmentClient
+        ? "Open your installed development build and scan the QR code from its launcher."
+        : "Now scan the Expo QR code from Expo Go."
+    );
   } catch (error) {
     console.warn("\nMetro bundle prewarm did not finish in time.");
     console.warn(error instanceof Error ? error.message : error);
@@ -245,9 +281,17 @@ async function waitForMetro() {
 
 function getLanHost() {
   const interfaces = os.networkInterfaces();
+  const interfaceNames = Object.keys(interfaces);
+  // macOS can expose stale VPN/continuity addresses before the active Wi-Fi adapter.
+  // Prefer physical Ethernet/Wi-Fi adapters, then fall back to other non-loopback interfaces.
+  const orderedInterfaceNames = [
+    ...interfaceNames.filter((name) => /^en\d+$/.test(name)),
+    ...interfaceNames.filter((name) => !/^en\d+$/.test(name)),
+  ];
   const candidates = [];
 
-  for (const addresses of Object.values(interfaces)) {
+  for (const name of orderedInterfaceNames) {
+    const addresses = interfaces[name];
     for (const address of addresses || []) {
       if (address.family === "IPv4" && !address.internal) {
         candidates.push(address.address);

@@ -1,0 +1,9 @@
+appId: com.livingnutrition.app
+---
+- launchApp:
+    clearState: true
+- tapOn: "Scan a meal with the camera"
+- assertVisible: "A clear photo makes review easier."
+- assertVisible: "Search for food instead"
+- tapOn: "Search for food instead"
+- assertVisible: "Search verified food records"

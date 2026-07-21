@@ -1,6 +1,6 @@
 from collections.abc import Generator
 
-from fastapi.testclient import TestClient
+from tests.http_client import ApiTestClient as TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -33,6 +33,7 @@ def test_create_meal_and_read_diary_totals() -> None:
         client = TestClient(app)
         meal_payload = {
             "name": "Banana",
+            "mealType": "breakfast",
             "loggedAt": "2026-07-06T12:00:00Z",
             "notes": "Manual entry for 1 medium banana.",
             "items": [
@@ -71,9 +72,35 @@ def test_create_meal_and_read_diary_totals() -> None:
             ],
         }
 
-        created = client.post("/api/v1/meals", json=meal_payload)
+        created = client.post(
+            "/api/v1/meals",
+            json=meal_payload,
+            headers={"Idempotency-Key": "manual-banana-2026-07-06"},
+        )
         assert created.status_code == 201
+        assert created.json()["mealType"] == "breakfast"
+        assert created.json()["loggedAt"].startswith("2026-07-06T12:00:00")
         assert created.json()["items"][0]["displayName"] == "Bananas, raw"
+
+        replayed = client.post(
+            "/api/v1/meals",
+            json=meal_payload,
+            headers={"Idempotency-Key": "manual-banana-2026-07-06"},
+        )
+        assert replayed.status_code == 201
+        assert replayed.json()["id"] == created.json()["id"]
+
+        conflicting_replay = client.post(
+            "/api/v1/meals",
+            json={**meal_payload, "name": "Banana with peanut butter"},
+            headers={"Idempotency-Key": "manual-banana-2026-07-06"},
+        )
+        assert conflicting_replay.status_code == 409
+        assert "different request" in conflicting_replay.json()["error"]["message"]
+
+        meals = client.get("/api/v1/meals?date=2026-07-06")
+        assert meals.status_code == 200
+        assert len(meals.json()) == 1
 
         recent = client.get("/api/v1/foods/recent")
         assert recent.status_code == 200
@@ -88,11 +115,14 @@ def test_create_meal_and_read_diary_totals() -> None:
         body = diary.json()
         assert body["totals"]["calories"] == 105.0
         assert body["totals"]["proteinGrams"] == 1.3
+        assert body["meals"][0]["mealType"] == "breakfast"
         assert body["meals"][0]["items"][0]["nutrientSnapshotJson"]["nutrientsPer100g"]["caloriesKcal"] == 89
 
         updated = client.patch(
             f"/api/v1/meals/{created.json()['id']}",
             json={
+                "mealType": "snack",
+                "loggedAt": "2026-07-06T15:30:00Z",
                 "items": [
                     {
                         **meal_payload["items"][0],
@@ -111,6 +141,8 @@ def test_create_meal_and_read_diary_totals() -> None:
             },
         )
         assert updated.status_code == 200
+        assert updated.json()["mealType"] == "snack"
+        assert updated.json()["loggedAt"].startswith("2026-07-06T15:30:00")
         assert updated.json()["items"][0]["consumedGrams"] == 59
 
         recent_after_update = client.get("/api/v1/foods/recent")

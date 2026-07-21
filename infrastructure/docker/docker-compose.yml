@@ -25,9 +25,48 @@ services:
       - "8000:8000"
     volumes:
       - ../../apps/api:/app
+      - private_analysis_images:/tmp/living-nutrition-private-images
+    depends_on:
+      - postgres
+      - redis
+
+  image-retention-worker:
+    build:
+      context: ../../apps/api
+    env_file:
+      - ../../apps/api/.env
+    command: sh -c "alembic upgrade head && python -m app.workers.image_retention"
+    volumes:
+      - ../../apps/api:/app
+      - private_analysis_images:/tmp/living-nutrition-private-images
+    depends_on:
+      - postgres
+
+  meal-analysis-worker:
+    build:
+      context: ../../apps/api
+    env_file:
+      - ../../apps/api/.env
+    command: sh -c "alembic upgrade head && python -m app.workers.meal_analysis"
+    volumes:
+      - ../../apps/api:/app
+      - private_analysis_images:/tmp/living-nutrition-private-images
+    depends_on:
+      - postgres
+      - redis
+
+  food-source-refresh-worker:
+    build:
+      context: ../../apps/api
+    env_file:
+      - ../../apps/api/.env
+    command: sh -c "alembic upgrade head && python -m app.workers.food_source_refresh"
+    volumes:
+      - ../../apps/api:/app
     depends_on:
       - postgres
       - redis
 
 volumes:
   postgres_data:
+  private_analysis_images:

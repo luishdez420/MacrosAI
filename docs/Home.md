@@ -22,7 +22,7 @@ Last updated: 2026-07-08
 
 Build a reliable, transparent meal-entry flow:
 
-1. Add managed identity or OAuth, account recovery, richer session management, and distributed rate limiting beyond the JWT/refresh foundation, basic local session controls, and current process-local endpoint limits.
+1. Add managed identity or OAuth, account recovery, richer session management, trusted-proxy policy, and Redis deployment validation beyond the JWT/refresh foundation, basic local session controls, and production-required Redis shared limits.
 2. Add enforceable privacy, image storage/retention, and audit controls.
 3. Strengthen advanced camera candidate/add-on correction and correction-report administration.
 4. Expand provider cache refresh, saved-food organization, richer weight insights, and automated mobile/E2E coverage.

@@ -6,6 +6,8 @@ import { LabelScanScreen } from "../LabelScanScreen";
 const mockTakePicture = jest.fn();
 const mockAnalyzeNutritionLabel = jest.fn();
 const mockPush = jest.fn();
+const mockRequestPermission = jest.fn();
+let mockPermissionGranted = true;
 
 jest.mock("expo-camera", () => {
   const React = require("react");
@@ -16,7 +18,7 @@ jest.mock("expo-camera", () => {
       React.useImperativeHandle(ref, () => ({ takePictureAsync: mockTakePicture }));
       return React.createElement(View, { testID: "mock-label-camera" });
     }),
-    useCameraPermissions: () => [{ granted: true }, jest.fn()],
+    useCameraPermissions: () => [{ granted: mockPermissionGranted }, mockRequestPermission],
   };
 });
 
@@ -42,6 +44,8 @@ describe("LabelScanScreen", () => {
     mockTakePicture.mockReset();
     mockAnalyzeNutritionLabel.mockReset();
     mockPush.mockReset();
+    mockRequestPermission.mockReset();
+    mockPermissionGranted = true;
     useLabelDraftStore.getState().clearDraft();
   });
 
@@ -66,7 +70,7 @@ describe("LabelScanScreen", () => {
       expect(mockAnalyzeNutritionLabel).toHaveBeenCalledWith({
         imageBase64: "aGVsbG8gd29ybGQ=",
         barcode: "012345678905",
-      });
+      }, expect.objectContaining({ idempotencyKey: expect.stringMatching(/^label-/) }));
       expect(mockPush).toHaveBeenCalledWith(
         "/custom-food?labelCaptured=1&labelAnalyzed=1&barcode=012345678905"
       );
@@ -97,6 +101,38 @@ describe("LabelScanScreen", () => {
       expect(view.getByText("The label could not be read reliably.")).toBeTruthy();
       expect(view.getByText("Enter manually")).toBeTruthy();
     });
+  });
+
+  it("keeps inline recovery and manual entry available when camera capture fails", async () => {
+    mockTakePicture.mockRejectedValue(new Error("Camera unavailable"));
+    const view = await render(<LabelScanScreen />);
+
+    await act(async () => {
+      fireEvent.press(view.getByLabelText("Capture nutrition label photo"));
+    });
+
+    await waitFor(() => {
+      expect(view.getByText("Label analysis needs attention")).toBeTruthy();
+      expect(view.getByText(/could not capture that label photo/)).toBeTruthy();
+      expect(view.getByText("Enter manually")).toBeTruthy();
+    });
+    expect(view.getByLabelText("Capture nutrition label photo").props.accessibilityHint).toContain(
+      "never saved automatically"
+    );
+  });
+
+  it("offers manual nutrition entry before camera permission is granted", async () => {
+    mockPermissionGranted = false;
+    const view = await render(<LabelScanScreen />);
+
+    expect(view.getByText("Label capture needs camera access.")).toBeTruthy();
+    expect(view.getByText(/Nothing is saved from the photo automatically/)).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.press(view.getByText("Enter nutrition manually"));
+    });
+
+    expect(mockPush).toHaveBeenCalledWith("/custom-food?barcode=012345678905");
   });
 });
 

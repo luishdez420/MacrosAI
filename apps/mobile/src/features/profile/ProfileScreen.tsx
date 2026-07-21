@@ -15,15 +15,30 @@ import {
 } from "react-native";
 import Svg, { Circle, Line, Polyline, Text as SvgText } from "react-native-svg";
 
-import { colors, radii, spacing, typography } from "@living-nutrition/design-tokens";
+import { colors, radii, spacing, typography, type ThemePreference } from "@living-nutrition/design-tokens";
+import {
+  dietaryPreferenceValues,
+  loggingPreferenceValues,
+  onboardingGoalValues,
+} from "@living-nutrition/shared-types";
 import type {
   AuthSessionSummary,
+  DietaryPreference,
   FoodCorrectionReportSummary,
+  LoggingPreference,
   NutritionGoalUpdate,
+  OnboardingGoal,
+  UserPreferenceUpdate,
   WeightEntry,
   WeightEntryCreate,
 } from "@living-nutrition/shared-types";
-import { api, clearStoredSession, signOutStoredSession, storeSession } from "../../services/api";
+import {
+  api,
+  signOutStoredSession,
+  storeSession,
+} from "../../services/api";
+import { env } from "../../config/env";
+import { ClerkAccountSecurity } from "../auth/ClerkAccountSecurity";
 import {
   ActionButton,
   Card,
@@ -41,18 +56,22 @@ import {
 import {
   buildWeightTrendSummary,
   buildWeightGoalInsight,
-  buildUserDataExportSummary,
   correctionReportSourceSummary,
   correctionReportTypeLabel,
   convertProfileMeasurementInputs,
   formatWeight,
-  normalizeRetentionDaysInput,
-  retentionPreferenceSummary,
   sortWeightEntriesAscending,
   weightInputValue,
   weightDisplayValue,
   type MeasurementSystem,
 } from "./profilePresentation";
+import { useTheme } from "../../shared/theme/ThemeProvider";
+import {
+  goalDirectionForOnboardingGoal,
+  dietaryPreferenceLabel,
+  loggingPreferenceLabel,
+  onboardingGoalLabel,
+} from "../../shared/domain/onboardingPersonalization";
 
 const directionOptions: Array<{ label: string; value: GoalDirection }> = [
   { label: "Maintain", value: "maintain" },
@@ -62,8 +81,13 @@ const directionOptions: Array<{ label: string; value: GoalDirection }> = [
 
 export function ProfileScreen() {
   const queryClient = useQueryClient();
+  const { palette, preference: themePreference, setThemePreference } = useTheme();
   const [email, setEmail] = useState("you@example.com");
   const [password, setPassword] = useState("");
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmedNewPassword, setConfirmedNewPassword] = useState("");
+  const [passwordChangeNotice, setPasswordChangeNotice] = useState<string | null>(null);
   const [displayName, setDisplayName] = useState("Living Nutrition User");
   const [measurementSystem, setMeasurementSystem] = useState<MeasurementSystem>("us");
   const [heightFeet, setHeightFeet] = useState("5");
@@ -72,12 +96,16 @@ export function ProfileScreen() {
   const [heightCm, setHeightCm] = useState("175");
   const [weightKg, setWeightKg] = useState("80");
   const [bodyFatPercent, setBodyFatPercent] = useState("20");
+  const [goalEffectiveDate, setGoalEffectiveDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [weightNote, setWeightNote] = useState("");
   const [editingWeightEntry, setEditingWeightEntry] = useState<WeightEntry | null>(null);
-  const [imageRetentionDays, setImageRetentionDays] = useState("30");
   const [preferenceNotice, setPreferenceNotice] = useState<string | null>(null);
-  const [retentionNotice, setRetentionNotice] = useState<string | null>(null);
   const [direction, setDirection] = useState<GoalDirection>("maintain");
+  const [onboardingGoal, setOnboardingGoal] = useState<OnboardingGoal>("maintain_rhythm");
+  const [loggingPreference, setLoggingPreference] = useState<LoggingPreference>("package_labels");
+  const [dietaryPreferences, setDietaryPreferences] = useState<DietaryPreference[]>([]);
+  const [personalizationNotice, setPersonalizationNotice] = useState<string | null>(null);
+  const clerkEnabled = Boolean(env.clerkPublishableKey);
   const session = useQuery({
     queryKey: ["session"],
     queryFn: () => api.getSession(),
@@ -86,6 +114,11 @@ export function ProfileScreen() {
   const goal = useQuery({
     queryKey: ["goal"],
     queryFn: () => api.getGoal(),
+    retry: 1,
+  });
+  const goalHistory = useQuery({
+    queryKey: ["goal-history"],
+    queryFn: () => api.listGoalHistory(),
     retry: 1,
   });
   const preferences = useQuery({
@@ -147,10 +180,26 @@ export function ProfileScreen() {
       Alert.alert("Profile was not saved", error.message);
     },
   });
+  const passwordChangeMutation = useMutation({
+    mutationFn: () => api.changePassword({ currentPassword, newPassword }),
+    onSuccess: async (updatedSession) => {
+      await storeSession(updatedSession);
+      setCurrentPassword("");
+      setNewPassword("");
+      setConfirmedNewPassword("");
+      await queryClient.invalidateQueries({ queryKey: ["session"] });
+      await queryClient.invalidateQueries({ queryKey: ["auth-sessions"] });
+      setPasswordChangeNotice("Password updated. Other signed-in devices were signed out, and this device now has a fresh session.");
+    },
+    onError: (error) => {
+      setPasswordChangeNotice(error.message);
+    },
+  });
   const goalMutation = useMutation({
     mutationFn: (payload: NutritionGoalUpdate) => api.updateGoal(payload),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["goal"] });
+      await queryClient.invalidateQueries({ queryKey: ["goal-history"] });
       await queryClient.invalidateQueries({ queryKey: ["diary"] });
     },
     onError: (error) => {
@@ -158,8 +207,9 @@ export function ProfileScreen() {
     },
   });
   const preferenceMutation = useMutation({
-    mutationFn: (unitSystem: MeasurementSystem) => api.updatePreferences({ unitSystem }),
-    onSuccess: async () => {
+    mutationFn: (input: UserPreferenceUpdate) => api.updatePreferences(input),
+    onSuccess: async (updatedPreferences) => {
+      await setThemePreference(updatedPreferences.themePreference);
       await queryClient.invalidateQueries({ queryKey: ["preferences"] });
       setPreferenceNotice(null);
     },
@@ -167,15 +217,15 @@ export function ProfileScreen() {
       setPreferenceNotice(error.message);
     },
   });
-  const retentionMutation = useMutation({
-    mutationFn: (days: number) => api.updatePreferences({ imageRetentionDays: days }),
-    onSuccess: async (updatedPreferences) => {
-      setImageRetentionDays(String(updatedPreferences.imageRetentionDays));
-      setRetentionNotice(null);
+  const personalizationMutation = useMutation({
+    mutationFn: (input: Pick<UserPreferenceUpdate, "onboardingGoal" | "loggingPreference" | "dietaryPreferences" | "goalDirection">) =>
+      api.updatePreferences(input),
+    onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["preferences"] });
+      setPersonalizationNotice(null);
     },
     onError: (error) => {
-      setRetentionNotice(error.message);
+      setPersonalizationNotice(error.message);
     },
   });
   const weightMutation = useMutation({
@@ -197,29 +247,6 @@ export function ProfileScreen() {
     },
     onError: (error) => {
       Alert.alert("Weight was not deleted", error.message);
-    },
-  });
-  const exportMutation = useMutation({
-    mutationFn: () => api.exportUserData(),
-    onSuccess: (exportData) => {
-      Alert.alert(
-        "Data export ready",
-        `${buildUserDataExportSummary(exportData)}\n\nThis is a JSON export from the current account data available on this device/API session.`
-      );
-    },
-    onError: (error) => {
-      Alert.alert("Data export failed", error.message);
-    },
-  });
-  const deleteAccountMutation = useMutation({
-    mutationFn: () => api.deleteAccount(),
-    onSuccess: async () => {
-      await clearStoredSession();
-      await queryClient.invalidateQueries();
-      Alert.alert("Account deleted", "Account data has been removed from this API session.");
-    },
-    onError: (error) => {
-      Alert.alert("Account was not deleted", error.message);
     },
   });
   const revokeSessionMutation = useMutation({
@@ -253,10 +280,35 @@ export function ProfileScreen() {
   }, [measurementSystem, preferenceMutation.isPending, preferences.data?.unitSystem]);
 
   useEffect(() => {
-    if (preferences.data && !retentionMutation.isPending) {
-      setImageRetentionDays(String(preferences.data.imageRetentionDays));
+    if (preferences.data?.goalDirection && !preferenceMutation.isPending) {
+      setDirection(preferences.data.goalDirection);
     }
-  }, [preferences.data, retentionMutation.isPending]);
+  }, [preferenceMutation.isPending, preferences.data?.goalDirection]);
+
+  useEffect(() => {
+    if (preferences.data?.onboardingGoal && !personalizationMutation.isPending) {
+      setOnboardingGoal(preferences.data.onboardingGoal);
+    }
+  }, [personalizationMutation.isPending, preferences.data?.onboardingGoal]);
+
+  useEffect(() => {
+    if (preferences.data?.loggingPreference && !personalizationMutation.isPending) {
+      setLoggingPreference(preferences.data.loggingPreference);
+    }
+  }, [personalizationMutation.isPending, preferences.data?.loggingPreference]);
+
+  useEffect(() => {
+    if (preferences.data && !personalizationMutation.isPending) {
+      // Older local API previews can return this field before their schema repair runs.
+      setDietaryPreferences(normalizeDietaryPreferences(preferences.data.dietaryPreferences));
+    }
+  }, [personalizationMutation.isPending, preferences.data]);
+
+  useEffect(() => {
+    if (preferences.data?.themePreference && !preferenceMutation.isPending) {
+      void setThemePreference(preferences.data.themePreference);
+    }
+  }, [preferenceMutation.isPending, preferences.data?.themePreference, setThemePreference]);
 
   function saveProfile() {
     Keyboard.dismiss();
@@ -269,11 +321,37 @@ export function ProfileScreen() {
     authMutation.mutate();
   }
 
+  function changePassword() {
+    Keyboard.dismiss();
+
+    if (newPassword.trim().length < 8) {
+      setPasswordChangeNotice("Use a new password with at least 8 characters.");
+      return;
+    }
+
+    if (newPassword !== confirmedNewPassword) {
+      setPasswordChangeNotice("The new password and confirmation do not match.");
+      return;
+    }
+
+    if (newPassword === currentPassword) {
+      setPasswordChangeNotice("Choose a new password that differs from your current password.");
+      return;
+    }
+
+    setPasswordChangeNotice(null);
+    passwordChangeMutation.mutate();
+  }
+
   function saveGoal() {
     Keyboard.dismiss();
-    preferenceMutation.mutate(measurementSystem);
+    if (!isValidDateKey(goalEffectiveDate)) {
+      Alert.alert("Goal date needs attention", "Use YYYY-MM-DD, for example 2026-07-12.");
+      return;
+    }
+    preferenceMutation.mutate({ unitSystem: measurementSystem, goalDirection: direction });
     goalMutation.mutate({
-      startsOn: new Date().toISOString().slice(0, 10),
+      startsOn: goalEffectiveDate,
       caloriesKcal: recommendation.caloriesKcal,
       proteinGrams: recommendation.proteinGrams,
       carbohydrateGrams: recommendation.carbohydrateGrams,
@@ -285,6 +363,32 @@ export function ProfileScreen() {
 
   function chooseMeasurementSystem(value: MeasurementSystem) {
     applyMeasurementSystem(value, true);
+  }
+
+  function chooseThemePreference(value: ThemePreference) {
+    void setThemePreference(value);
+    preferenceMutation.mutate({ themePreference: value });
+  }
+
+  function chooseOnboardingGoal(value: OnboardingGoal) {
+    const goalDirection = goalDirectionForOnboardingGoal(value);
+    setOnboardingGoal(value);
+    setDirection(goalDirection);
+    personalizationMutation.mutate({ onboardingGoal: value, goalDirection });
+  }
+
+  function chooseLoggingPreference(value: LoggingPreference) {
+    setLoggingPreference(value);
+    personalizationMutation.mutate({ loggingPreference: value });
+  }
+
+  function toggleDietaryPreference(value: DietaryPreference) {
+    const currentPreferences = normalizeDietaryPreferences(dietaryPreferences);
+    const nextPreferences = currentPreferences.includes(value)
+      ? currentPreferences.filter((preference) => preference !== value)
+      : [...currentPreferences, value];
+    setDietaryPreferences(nextPreferences);
+    personalizationMutation.mutate({ dietaryPreferences: nextPreferences });
   }
 
   function applyMeasurementSystem(value: MeasurementSystem, persistPreference: boolean) {
@@ -310,21 +414,8 @@ export function ProfileScreen() {
     }
 
     if (persistPreference) {
-      preferenceMutation.mutate(value);
+      preferenceMutation.mutate({ unitSystem: value });
     }
-  }
-
-  function saveImageRetentionPreference() {
-    Keyboard.dismiss();
-    const days = normalizeRetentionDaysInput(imageRetentionDays);
-
-    if (days === undefined) {
-      setRetentionNotice("Enter a number from 0 to 365 days.");
-      return;
-    }
-
-    setImageRetentionDays(String(days));
-    retentionMutation.mutate(days);
   }
 
   function saveWeight() {
@@ -395,21 +486,6 @@ export function ProfileScreen() {
     );
   }
 
-  function confirmDeleteAccount() {
-    Alert.alert(
-      "Delete local account?",
-      "This removes your local profile, goals, meals, weight entries, favorites, recents, custom foods, and analysis jobs from this API. This cannot be undone.",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Delete account",
-          style: "destructive",
-          onPress: () => deleteAccountMutation.mutate(),
-        },
-      ]
-    );
-  }
-
   return (
     <KeyboardAvoidingView
       style={styles.keyboardAvoider}
@@ -421,13 +497,13 @@ export function ProfileScreen() {
               <Text style={styles.eyebrow}>Profile</Text>
               <Text style={styles.title}>Goals that travel with you.</Text>
               <Text style={styles.body}>
-                Sign in locally for now with an email and password, then set a calorie ceiling and
-                macro target based on your body stats. This keeps logged meals tied to your profile
-                token while production account security is built out.
+                {clerkEnabled
+                  ? "Your Clerk account protects your meals, goals, and progress. Set reviewable calorie and macro targets based on your body stats."
+                  : "Local preview uses an email and password while Clerk is not configured. Do not use this compatibility mode for production data."}
               </Text>
             </View>
 
-            <Card>
+            {clerkEnabled ? <ClerkAccountSecurity /> : <><Card>
               <SectionHeader
                 title="Account"
                 meta={session.data?.authScheme === "jwt" || session.data?.authScheme === "local-token" ? "Signed in" : "Local dev"}
@@ -456,6 +532,133 @@ export function ProfileScreen() {
                 <ActionButton label="Sign out" variant="secondary" onPress={signOut} style={styles.flexButton} />
               </View>
             </Card>
+
+            {session.data?.authScheme === "jwt" ? (
+              <Card>
+                <SectionHeader title="Password" meta="Local account" />
+                <Text style={[styles.body, { color: palette.muted }]}>
+                  Change your local password here. For your safety, other signed-in devices will be signed out. This device receives a fresh session after the update.
+                </Text>
+                <View style={styles.formGrid}>
+                  <LabeledInput label="Current password" value={currentPassword} onChangeText={setCurrentPassword} secureTextEntry />
+                  <LabeledInput label="New password" value={newPassword} onChangeText={setNewPassword} secureTextEntry />
+                  <LabeledInput label="Confirm new password" value={confirmedNewPassword} onChangeText={setConfirmedNewPassword} secureTextEntry />
+                </View>
+                {passwordChangeNotice ? (
+                  <InlineNotice
+                    title={passwordChangeMutation.isError ? "Password was not updated" : "Password security"}
+                    body={passwordChangeNotice}
+                    tone={passwordChangeMutation.isError ? "warning" : "success"}
+                  />
+                ) : null}
+                <ActionButton
+                  label={passwordChangeMutation.isPending ? "Updating password..." : "Update password"}
+                  onPress={changePassword}
+                  disabled={passwordChangeMutation.isPending}
+                  accessibilityHint="Updates your local password and signs out other devices"
+                />
+              </Card>
+            ) : null}</>}
+
+            <Card>
+              <SectionHeader title="Appearance" meta={themePreference === "system" ? "Follows device" : `${themePreference[0]?.toUpperCase()}${themePreference.slice(1)}`} />
+              <Text style={[styles.body, { color: palette.muted }]}>
+                Choose a comfortable visual setting. System follows your device; all nutrition colors keep their meaning in either theme.
+              </Text>
+              <View accessibilityRole="radiogroup" accessibilityLabel="Color theme" style={styles.segmentRow}>
+                {(["system", "light", "dark"] as const).map((option) => {
+                  const selected = themePreference === option;
+                  const label = option === "system" ? "System" : `${option[0]?.toUpperCase()}${option.slice(1)}`;
+                  return (
+                    <Pressable
+                      key={option}
+                      accessibilityRole="radio"
+                      accessibilityLabel={`${label} theme`}
+                      accessibilityState={{ selected }}
+                      onPress={() => chooseThemePreference(option)}
+                      style={[
+                        styles.segment,
+                        { backgroundColor: selected ? colors.green : palette.controlSurface },
+                      ]}
+                    >
+                      <Text style={[styles.segmentText, { color: selected ? palette.onPrimary : palette.ink }]}>{label}</Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+              {preferenceNotice ? <InlineNotice title="Appearance preference was not saved" body={preferenceNotice} tone="warning" /> : null}
+            </Card>
+
+            {clerkEnabled ? null : <Card>
+              <SectionHeader title="Your logging rhythm" meta="From onboarding" />
+              <Text style={[styles.body, { color: palette.muted }]}>
+                These choices keep the app aligned with how you prefer to log. They never change a saved meal or replace a portion you enter.
+              </Text>
+              <Text style={[styles.preferenceGroupLabel, { color: palette.ink }]}>What you are focusing on</Text>
+              <View accessibilityRole="radiogroup" accessibilityLabel="Nutrition focus" style={styles.preferenceChipGrid}>
+                {onboardingGoalValues.map((option) => {
+                  const selected = onboardingGoal === option;
+                  return (
+                    <Pressable
+                      key={option}
+                      accessibilityRole="radio"
+                      accessibilityLabel={onboardingGoalLabel(option)}
+                      accessibilityState={{ selected }}
+                      onPress={() => chooseOnboardingGoal(option)}
+                      style={[styles.preferenceChip, { backgroundColor: selected ? colors.green : palette.controlSurface }]}
+                    >
+                      <Text style={[styles.preferenceChipText, { color: selected ? palette.onPrimary : palette.ink }]}>
+                        {onboardingGoalLabel(option)}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+              <Text style={[styles.preferenceGroupLabel, { color: palette.ink }]}>What you usually rely on</Text>
+              <View accessibilityRole="radiogroup" accessibilityLabel="Preferred logging method" style={styles.preferenceChipGrid}>
+                {loggingPreferenceValues.map((option) => {
+                  const selected = loggingPreference === option;
+                  return (
+                    <Pressable
+                      key={option}
+                      accessibilityRole="radio"
+                      accessibilityLabel={loggingPreferenceLabel(option)}
+                      accessibilityState={{ selected }}
+                      onPress={() => chooseLoggingPreference(option)}
+                      style={[styles.preferenceChip, { backgroundColor: selected ? colors.green : palette.controlSurface }]}
+                    >
+                      <Text style={[styles.preferenceChipText, { color: selected ? palette.onPrimary : palette.ink }]}>
+                        {loggingPreferenceLabel(option)}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+              <Text style={[styles.preferenceGroupLabel, { color: palette.ink }]}>Dietary preferences</Text>
+              <Text style={[styles.conversionText, { color: palette.muted }]}>Optional reference only. These selections do not filter food matches, verify ingredients or allergens, or determine medical suitability.</Text>
+              <View accessibilityLabel="Dietary preferences" style={styles.preferenceChipGrid}>
+                {dietaryPreferenceValues.map((option) => {
+                  const selected = dietaryPreferences.includes(option);
+                  return (
+                    <Pressable
+                      key={option}
+                      accessibilityRole="checkbox"
+                      accessibilityLabel={dietaryPreferenceLabel(option)}
+                      accessibilityState={{ checked: selected }}
+                      onPress={() => toggleDietaryPreference(option)}
+                      style={[styles.preferenceChip, { backgroundColor: selected ? colors.green : palette.controlSurface }]}
+                    >
+                      <Text style={[styles.preferenceChipText, { color: selected ? palette.onPrimary : palette.ink }]}>
+                        {dietaryPreferenceLabel(option)}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+              {personalizationNotice ? (
+                <InlineNotice title="Personalization preference was not saved" body={personalizationNotice} tone="warning" />
+              ) : null}
+            </Card>}
 
             <Card>
               <SectionHeader
@@ -509,45 +712,73 @@ export function ProfileScreen() {
               )}
             </Card>
 
-            <Card>
-              <SectionHeader title="Data controls" meta="Privacy draft" />
-              <Text style={styles.body}>
-                Export a JSON snapshot of your profile, goals, weight entries, meals, and saved foods
-                for the current local account. You can also delete this local account. Enforced image
-                deletion and production account lifecycle controls are still planned.
-              </Text>
-              <ActionButton
-                label={exportMutation.isPending ? "Preparing export..." : "Export my data"}
-                onPress={() => exportMutation.mutate()}
-                disabled={exportMutation.isPending}
-              />
-              <ActionButton
-                label={deleteAccountMutation.isPending ? "Deleting account..." : "Delete local account"}
-                variant="secondary"
-                onPress={confirmDeleteAccount}
-                disabled={deleteAccountMutation.isPending}
-              />
-              <View style={styles.formGrid}>
-                <LabeledInput
-                  label="Image retention days"
-                  value={imageRetentionDays}
-                  onChangeText={setImageRetentionDays}
-                  keyboardType="decimal-pad"
-                />
-                <Text style={styles.conversionText}>
-                  {retentionPreferenceSummary(normalizeRetentionDaysInput(imageRetentionDays) ?? 30)}
-                </Text>
-                {retentionNotice ? (
-                  <InlineNotice title="Retention preference was not saved" body={retentionNotice} tone="warning" />
-                ) : null}
-                <ActionButton
-                  label={retentionMutation.isPending ? "Saving retention..." : "Save retention preference"}
-                  variant="secondary"
-                  onPress={saveImageRetentionPreference}
-                  disabled={retentionMutation.isPending}
-                />
-              </View>
-            </Card>
+            <Link href="/data-controls" asChild>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Open data controls"
+                accessibilityHint="Review export, retention preference, and Living Nutrition profile deletion controls"
+                style={styles.dataControlsLink}
+              >
+                <Card tone="soft">
+                  <SectionHeader title="Data controls" meta="Privacy" />
+                  <Text style={styles.body}>
+                    Review your local export, image-retention preference, and account deletion controls in one focused place.
+                  </Text>
+                  <Text style={styles.dataControlsLinkText}>Review data controls</Text>
+                </Card>
+              </Pressable>
+            </Link>
+
+            <Link href="/accessibility" asChild>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Open accessibility settings"
+                accessibilityHint="Review how Living Nutrition follows device text, motion, transparency, and screen-reader settings"
+                style={styles.dataControlsLink}
+              >
+                <Card tone="soft">
+                  <SectionHeader title="Accessibility" meta="Device settings" />
+                  <Text style={styles.body}>
+                    Review text size, reduced motion, reduced transparency, screen-reader status, and how the app responds.
+                  </Text>
+                  <Text style={styles.dataControlsLinkText}>Review accessibility settings</Text>
+                </Card>
+              </Pressable>
+            </Link>
+
+            <Link href="/notifications" asChild>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Open notification settings"
+                accessibilityHint="Choose an optional local hydration reminder for this device"
+                style={styles.dataControlsLink}
+              >
+                <Card tone="insight">
+                  <SectionHeader title="Notifications" meta="Optional" />
+                  <Text style={styles.body}>
+                    Schedule one gentle local hydration check-in, or keep reminders off. There is no default target or pressure to respond.
+                  </Text>
+                  <Text style={styles.dataControlsLinkText}>Manage reminders</Text>
+                </Card>
+              </Pressable>
+            </Link>
+
+            <Link href="/premium" asChild>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Open Premium preview"
+                accessibilityHint="Review available free tools and planned membership directions without starting a purchase"
+                style={styles.dataControlsLink}
+              >
+                <Card tone="accent">
+                  <SectionHeader title="Premium preview" meta="No purchase" />
+                  <Text style={styles.body}>
+                    See what is available now, what is still in development, and the principles any future membership will follow.
+                  </Text>
+                  <Text style={styles.dataControlsLinkText}>Explore the preview</Text>
+                </Card>
+              </Pressable>
+            </Link>
 
             <Card>
               <SectionHeader
@@ -590,8 +821,11 @@ export function ProfileScreen() {
 
             <Card>
               <SectionHeader title="Goal recommendation" meta="Editable inputs" />
-              <View style={styles.segmentRow}>
+              <View accessibilityRole="radiogroup" accessibilityLabel="Measurement system" style={styles.segmentRow}>
                 <Pressable
+                  accessibilityRole="radio"
+                  accessibilityLabel="Use U.S. measurements"
+                  accessibilityState={{ selected: measurementSystem === "us" }}
                   style={[styles.segment, measurementSystem === "us" ? styles.activeSegment : undefined]}
                   onPress={() => chooseMeasurementSystem("us")}
                 >
@@ -600,6 +834,9 @@ export function ProfileScreen() {
                   </Text>
                 </Pressable>
                 <Pressable
+                  accessibilityRole="radio"
+                  accessibilityLabel="Use metric measurements"
+                  accessibilityState={{ selected: measurementSystem === "metric" }}
                   style={[styles.segment, measurementSystem === "metric" ? styles.activeSegment : undefined]}
                   onPress={() => chooseMeasurementSystem("metric")}
                 >
@@ -658,10 +895,18 @@ export function ProfileScreen() {
                 <LabeledInput label="Body fat (%)" value={bodyFatPercent} onChangeText={setBodyFatPercent} keyboardType="decimal-pad" />
               </View>
               <Text style={styles.conversionText}>{normalizedStats.label}</Text>
-              <View style={styles.segmentRow}>
+              <LabeledInput
+                label="Goal effective date"
+                value={goalEffectiveDate}
+                onChangeText={setGoalEffectiveDate}
+              />
+              <View accessibilityRole="radiogroup" accessibilityLabel="Goal direction" style={styles.segmentRow}>
                 {directionOptions.map((option) => (
                   <Pressable
                     key={option.value}
+                    accessibilityRole="radio"
+                    accessibilityLabel={`Use ${option.label} as the goal direction`}
+                    accessibilityState={{ selected: direction === option.value }}
                     style={[styles.segment, direction === option.value ? styles.activeSegment : undefined]}
                     onPress={() => setDirection(option.value)}
                   >
@@ -687,11 +932,12 @@ export function ProfileScreen() {
                 label={goalMutation.isPending ? "Saving goal..." : "Use this goal"}
                 onPress={saveGoal}
                 disabled={goalMutation.isPending}
+                style={styles.goalRecommendationAction}
               />
             </Card>
 
             <Card>
-              <SectionHeader title="Current saved goal" />
+              <SectionHeader title="Goal schedule" meta={goalHistory.data?.length ? `${goalHistory.data.length} revisions` : undefined} />
               {goal.data ? (
                 <>
                   <Text style={styles.currentGoal}>{Math.round(goal.data.caloriesKcal)} kcal max</Text>
@@ -703,6 +949,16 @@ export function ProfileScreen() {
               ) : (
                 <Text style={styles.body}>No saved goal yet. Use the recommendation above to start.</Text>
               )}
+              {goalHistory.data?.length ? (
+                <View style={styles.goalHistoryList}>
+                  {goalHistory.data.map((revision) => (
+                    <View key={revision.id} style={styles.goalHistoryRow}>
+                      <Text style={styles.goalHistoryDate}>From {formatDisplayDate(revision.startsOn)}</Text>
+                      <Text style={styles.goalHistoryMeta}>{Math.round(revision.caloriesKcal)} kcal · {Math.round(revision.proteinGrams)}g protein</Text>
+                    </View>
+                  ))}
+                </View>
+              ) : null}
             </Card>
 
             <Card>
@@ -721,47 +977,51 @@ export function ProfileScreen() {
                   tone="neutral"
                 />
               ) : null}
-              <Text style={styles.currentGoal}>
-                {editingWeightEntry
-                  ? `${formatWeight(normalizedStats.weightKg * 1000, measurementSystem)} for ${formatDisplayDate(editingWeightEntry.loggedOn)}`
-                  : normalizedStats.weightLabel}
-              </Text>
-              <LabeledInput
-                label="Note (optional)"
-                value={weightNote}
-                onChangeText={setWeightNote}
-              />
-              <View style={styles.buttonRow}>
-                <ActionButton
-                  label={
-                    weightMutation.isPending
-                      ? "Saving weight..."
-                      : editingWeightEntry
-                        ? "Save weight edit"
-                        : "Log today's weight"
-                  }
-                  onPress={saveWeight}
-                  disabled={weightMutation.isPending}
-                  style={styles.flexButton}
+              <View testID="weight-entry-form" style={styles.weightEntryForm}>
+                <Text style={styles.currentGoal}>
+                  {editingWeightEntry
+                    ? `${formatWeight(normalizedStats.weightKg * 1000, measurementSystem)} for ${formatDisplayDate(editingWeightEntry.loggedOn)}`
+                    : normalizedStats.weightLabel}
+                </Text>
+                <LabeledInput
+                  label="Note (optional)"
+                  value={weightNote}
+                  onChangeText={setWeightNote}
                 />
-                {editingWeightEntry ? (
+                <View style={styles.buttonRow}>
                   <ActionButton
-                    label="Cancel edit"
-                    variant="secondary"
-                    onPress={cancelEditWeight}
+                    label={
+                      weightMutation.isPending
+                        ? "Saving weight..."
+                        : editingWeightEntry
+                          ? "Save weight edit"
+                          : "Log today's weight"
+                    }
+                    onPress={saveWeight}
+                    disabled={weightMutation.isPending}
                     style={styles.flexButton}
                   />
-                ) : null}
+                  {editingWeightEntry ? (
+                    <ActionButton
+                      label="Cancel edit"
+                      variant="secondary"
+                      onPress={cancelEditWeight}
+                      style={styles.flexButton}
+                    />
+                  ) : null}
+                </View>
               </View>
-              <WeightTrendChart
-                entries={weightEntries.data ?? []}
-                measurementSystem={measurementSystem}
-              />
-              <InlineNotice
-                title={weightGoalInsight.title}
-                body={weightGoalInsight.body}
-                tone={weightGoalInsight.tone}
-              />
+              <View testID="weight-feedback" style={styles.weightFeedback}>
+                <WeightTrendChart
+                  entries={weightEntries.data ?? []}
+                  measurementSystem={measurementSystem}
+                />
+                <InlineNotice
+                  title={weightGoalInsight.title}
+                  body={weightGoalInsight.body}
+                  tone={weightGoalInsight.tone}
+                />
+              </View>
               <View style={styles.weightHistory}>
                 {(weightEntries.data ?? []).length ? (
                   weightEntries.data?.map((entry) => (
@@ -821,12 +1081,15 @@ function LabeledInput({
   keyboardType?: "default" | "decimal-pad" | "email-address";
   secureTextEntry?: boolean;
 }) {
+  const { palette } = useTheme();
+
   return (
     <View style={styles.inputWrap}>
-      <Text style={styles.inputLabel}>{label}</Text>
+      <Text style={[styles.inputLabel, { color: palette.muted }]}>{label}</Text>
       <TextInput
         accessibilityLabel={label}
-        style={styles.input}
+        style={[styles.input, { backgroundColor: palette.controlSurface, color: palette.ink }]}
+        placeholderTextColor={palette.muted}
         value={value}
         onChangeText={onChangeText}
         keyboardType={keyboardType}
@@ -856,7 +1119,9 @@ function AuthSessionRow({
     <View style={styles.sessionRow}>
       <View style={styles.sessionCopy}>
         <View style={styles.sessionTitleRow}>
-          <Text style={styles.sessionTitle}>{session.isCurrent ? "This device" : "Other device"}</Text>
+          <Text numberOfLines={1} style={styles.sessionTitle}>
+            {session.deviceLabel || (session.isCurrent ? "This device" : "Other device")}
+          </Text>
           <StatusPill label={session.isCurrent ? "Current" : "Active"} tone="success" />
         </View>
         <Text style={styles.sessionMeta}>{activity}</Text>
@@ -920,6 +1185,27 @@ function CorrectionReportRow({ report }: { report: FoodCorrectionReportSummary }
 function parseNumber(value: string) {
   const parsed = Number(value.replace(",", "."));
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function normalizeDietaryPreferences(value: unknown): DietaryPreference[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return [...new Set(value)].filter(
+    (preference): preference is DietaryPreference =>
+      typeof preference === "string" && dietaryPreferenceValues.includes(preference as DietaryPreference)
+  );
+}
+
+function isValidDateKey(value: string) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(year, month - 1, day, 12);
+  return date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day;
 }
 
 function normalizeBodyStats({
@@ -1183,12 +1469,23 @@ const styles = StyleSheet.create({
     ...typography.button,
     color: colors.ink,
   },
+  preferenceGroupLabel: { ...typography.caption, paddingTop: spacing.xs },
+  preferenceChipGrid: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
+  preferenceChip: { minHeight: 44, justifyContent: "center", borderRadius: radii.pill, paddingHorizontal: spacing.md },
+  preferenceChipText: { ...typography.caption },
   activeSegmentText: {
     color: colors.white,
   },
   conversionText: {
     ...typography.caption,
     color: colors.muted,
+  },
+  dataControlsLink: {
+    minHeight: 44,
+  },
+  dataControlsLinkText: {
+    ...typography.button,
+    color: colors.green,
   },
   goalSummary: {
     alignItems: "flex-start",
@@ -1207,15 +1504,28 @@ const styles = StyleSheet.create({
   },
   macroGrid: {
     flexDirection: "row",
-    gap: spacing.sm,
+    gap: spacing.md,
+    marginVertical: spacing.md,
   },
   macroTile: {
     flexBasis: "30%",
+  },
+  goalRecommendationAction: {
+    marginTop: spacing.md,
   },
   currentGoal: {
     ...typography.heading,
     color: colors.ink,
   },
+  goalHistoryList: { gap: spacing.xs, paddingTop: spacing.md },
+  goalHistoryRow: {
+    gap: 2,
+    borderRadius: radii.md,
+    padding: spacing.sm,
+    backgroundColor: colors.background,
+  },
+  goalHistoryDate: { ...typography.caption, color: colors.inkSoft },
+  goalHistoryMeta: { ...typography.caption, color: colors.muted },
   reportList: {
     gap: spacing.sm,
   },
@@ -1306,6 +1616,18 @@ const styles = StyleSheet.create({
   },
   weightHistory: {
     gap: spacing.sm,
+    paddingTop: spacing.md,
+  },
+  weightEntryForm: {
+    gap: spacing.md,
+    paddingTop: spacing.xs,
+    paddingBottom: spacing.lg,
+  },
+  weightFeedback: {
+    gap: spacing.lg,
+    paddingTop: spacing.lg,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.surfaceAlt,
   },
   weightTrendCard: {
     gap: spacing.sm,
@@ -1365,7 +1687,7 @@ const styles = StyleSheet.create({
     gap: spacing.xs,
   },
   weightEditButton: {
-    minHeight: 36,
+    minHeight: 44,
     justifyContent: "center",
     borderRadius: radii.pill,
     paddingHorizontal: spacing.sm,
@@ -1377,7 +1699,7 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
   weightDeleteButton: {
-    minHeight: 36,
+    minHeight: 44,
     justifyContent: "center",
     borderRadius: radii.pill,
     paddingHorizontal: spacing.sm,

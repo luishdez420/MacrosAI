@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from uuid import uuid4
 
-from sqlalchemy import Date, DateTime, Float, ForeignKey, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Date, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
 
@@ -10,6 +10,9 @@ from app.db.base import Base
 
 class User(Base):
     __tablename__ = "users"
+    __table_args__ = (
+        UniqueConstraint("auth_provider", "external_subject", name="uq_users_auth_provider_subject"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     email: Mapped[str | None] = mapped_column(String(320), unique=True, nullable=True)
@@ -38,6 +41,11 @@ class UserPreference(Base):
     unit_system: Mapped[str] = mapped_column(String(16), default="metric")
     day_start_time: Mapped[str] = mapped_column(String(8), default="00:00")
     timezone: Mapped[str] = mapped_column(String(64), default="UTC")
+    goal_direction: Mapped[str] = mapped_column(String(16), default="maintain")
+    onboarding_goal: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    logging_preference: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    dietary_preferences: Mapped[list[str]] = mapped_column(JSON, default=list)
+    theme_preference: Mapped[str] = mapped_column(String(16), default="system")
     image_retention_days: Mapped[int] = mapped_column(default=30)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
@@ -53,6 +61,7 @@ class AuthSession(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     refresh_token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    device_label: Mapped[str | None] = mapped_column(String(96), nullable=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -76,8 +85,28 @@ class AuditLog(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class AuditDelivery(Base):
+    """Durable outbox state for privacy-minimized external audit delivery."""
+
+    __tablename__ = "audit_deliveries"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    audit_log_id: Mapped[str] = mapped_column(
+        ForeignKey("audit_logs.id", ondelete="CASCADE"),
+        unique=True,
+    )
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(48), nullable=True)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class NutritionGoal(Base):
     __tablename__ = "nutrition_goals"
+    __table_args__ = (Index("ix_nutrition_goals_user_starts_on", "user_id", "starts_on"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
@@ -105,6 +134,17 @@ class WeightEntry(Base):
     logged_on: Mapped[date] = mapped_column(Date, index=True)
     weight_grams: Mapped[float] = mapped_column(Float)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class HydrationEntry(Base):
+    __tablename__ = "hydration_entries"
+    __table_args__ = (UniqueConstraint("user_id", "logged_on", name="uq_hydration_entries_user_date"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    logged_on: Mapped[date] = mapped_column(Date, index=True)
+    milliliters: Mapped[int] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

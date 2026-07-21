@@ -1,4 +1,6 @@
+import { Ionicons } from "@expo/vector-icons";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import * as Haptics from "expo-haptics";
 import { Link, useLocalSearchParams, useRouter } from "expo-router";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -7,31 +9,54 @@ import {
   Image,
   Platform,
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
   TextInput,
   TouchableWithoutFeedback,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
-
 import type { CustomFoodCreate, MealCreate, NutrientPer100g } from "@living-nutrition/shared-types";
-import { colors, radii, spacing, typography } from "@living-nutrition/design-tokens";
+import { colors, radii, spacing, typography, type ThemePalette } from "@living-nutrition/design-tokens";
 import { calculateConsumedNutrients, roundNutrientsForDisplay } from "@living-nutrition/validation";
-import { api } from "../../services/api";
+import { api, getStoredUserId } from "../../services/api";
+import { queueConfirmedMeal } from "../../services/offlineMealQueue";
 import { useLabelDraftStore } from "../../stores/labelDraftStore";
 import {
   ActionButton,
   Card,
   InlineNotice,
   MacroStatTile,
+  ScreenShell,
   SectionHeader,
 } from "../../shared/components/LivingUI";
+import { useTheme } from "../../shared/theme/ThemeProvider";
+import {
+  actionIdempotencyKey,
+  createMealActionScope,
+  mealCreateIdempotencyKey,
+} from "../../shared/domain/mealIdempotency";
+import { canQueueConfirmedMeal } from "../../shared/domain/offlineMealSync";
+import { presentApiError } from "../../shared/domain/apiErrorPresentation";
 import { createMealFromFood, parsePositiveNumber, roundMacro } from "../food-logging/foodLogging";
+
+class CustomFoodMealLoggingError extends Error {
+  readonly cause: unknown;
+  readonly meal: MealCreate;
+  readonly idempotencyKey: string;
+
+  constructor(cause: unknown, meal: MealCreate, idempotencyKey: string) {
+    super("The custom food was saved, but its meal could not be logged.");
+    this.name = "CustomFoodMealLoggingError";
+    this.cause = cause;
+    this.meal = meal;
+    this.idempotencyKey = idempotencyKey;
+  }
+}
 
 export function CustomFoodScreen() {
   const router = useRouter();
+  const { palette } = useTheme();
+  const themed = customFoodThemeStyles(palette);
   const params = useLocalSearchParams<{
     foodId?: string;
     barcode?: string;
@@ -47,6 +72,8 @@ export function CustomFoodScreen() {
   const labelDraft = useLabelDraftStore((store) => store.draft);
   const clearLabelDraft = useLabelDraftStore((store) => store.clearDraft);
   const appliedLabelAnalysis = useRef(false);
+  const mealActionScope = useRef(createMealActionScope("custom")).current;
+  const customFoodActionScope = useRef(createMealActionScope("custom-food")).current;
   const [displayName, setDisplayName] = useState("");
   const [brandOwner, setBrandOwner] = useState("");
   const [servingSize, setServingSize] = useState("100");
@@ -60,7 +87,14 @@ export function CustomFoodScreen() {
   const [sugar, setSugar] = useState("");
   const [sodium, setSodium] = useState("");
   const [labelValuesReviewed, setLabelValuesReviewed] = useState(false);
-  const [notice, setNotice] = useState<{ title: string; body: string; tone: "warning" | "danger" } | null>(null);
+  const [mealLogged, setMealLogged] = useState(false);
+  const [deleteConfirmationOpen, setDeleteConfirmationOpen] = useState(false);
+  const [notice, setNotice] = useState<{
+    title: string;
+    body: string;
+    tone: "warning" | "danger";
+    queued?: boolean;
+  } | null>(null);
   const foodDetail = useQuery({
     queryKey: ["food-detail", foodId, "custom-edit"],
     queryFn: () => api.getFood(foodId || ""),
@@ -73,7 +107,9 @@ export function CustomFoodScreen() {
     mutationFn: async ({ customFood, grams }: { customFood: CustomFoodCreate; grams: number }) => {
       const savedFood = foodId
         ? await api.updateCustomFood(foodId, customFood)
-        : await api.createCustomFood(customFood);
+        : await api.createCustomFood(customFood, {
+            idempotencyKey: actionIdempotencyKey(customFoodActionScope, customFood),
+          });
       const consumedNutrients = calculateConsumedNutrients(savedFood.nutrientsPer100g, grams);
       const meal: MealCreate = createMealFromFood({
         food: savedFood,
@@ -85,7 +121,13 @@ export function CustomFoodScreen() {
         source: "custom",
       });
 
-      return api.createMeal(meal);
+      const idempotencyKey = mealCreateIdempotencyKey(mealActionScope, meal);
+
+      try {
+        return await api.createMeal(meal, { idempotencyKey });
+      } catch (error) {
+        throw new CustomFoodMealLoggingError(error, meal, idempotencyKey);
+      }
     },
     onSuccess: async () => {
       clearLabelDraft();
@@ -94,12 +136,39 @@ export function CustomFoodScreen() {
       await queryClient.invalidateQueries({ queryKey: ["foods", "favorites"] });
       await queryClient.invalidateQueries({ queryKey: ["foods", "custom"] });
       await queryClient.invalidateQueries({ queryKey: ["food-detail"] });
-      router.replace("/");
+      setMealLogged(true);
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => undefined);
     },
-    onError: (error) => {
+    onError: async (error) => {
+      if (error instanceof CustomFoodMealLoggingError && canQueueConfirmedMeal(error.cause)) {
+        const ownerId = await getStoredUserId();
+
+        if (ownerId) {
+          try {
+            await queueConfirmedMeal(ownerId, error.meal, error.idempotencyKey);
+            await queryClient.invalidateQueries({ queryKey: ["offline-meal-queue"] });
+            setNotice({
+              title: "Confirmed custom food queued",
+              body: "Your custom food is saved, and this confirmed portion is saved on this device until you sync it from Today.",
+              tone: "warning",
+              queued: true,
+            });
+            return;
+          } catch {
+            // Use the ordinary recovery message if device storage is unavailable.
+          }
+        }
+      }
+
       setNotice({
         title: "Custom food was not logged",
-        body: error.message,
+        body:
+          error instanceof CustomFoodMealLoggingError
+            ? presentApiError(
+                error.cause,
+                "Your custom food is saved, but we couldn't log this portion right now. Try again in a moment."
+              ).body
+            : error.message,
         tone: "danger",
       });
     },
@@ -107,7 +176,9 @@ export function CustomFoodScreen() {
   const saveOnlyMutation = useMutation({
     mutationFn: (customFood: CustomFoodCreate) => {
       if (!foodId) {
-        return api.createCustomFood(customFood);
+        return api.createCustomFood(customFood, {
+          idempotencyKey: actionIdempotencyKey(customFoodActionScope, customFood),
+        });
       }
 
       return api.updateCustomFood(foodId, customFood);
@@ -123,6 +194,25 @@ export function CustomFoodScreen() {
     onError: (error) => {
       setNotice({
         title: "Custom food was not saved",
+        body: error.message,
+        tone: "danger",
+      });
+    },
+  });
+  const deleteMutation = useMutation({
+    mutationFn: () => api.deleteCustomFood(foodId || ""),
+    onSuccess: async () => {
+      clearLabelDraft();
+      await queryClient.invalidateQueries({ queryKey: ["foods", "custom"] });
+      await queryClient.invalidateQueries({ queryKey: ["foods", "favorites"] });
+      await queryClient.invalidateQueries({ queryKey: ["foods", "recent"] });
+      await queryClient.invalidateQueries({ queryKey: ["food-detail"] });
+      router.replace("/saved-foods");
+    },
+    onError: (error) => {
+      setDeleteConfirmationOpen(false);
+      setNotice({
+        title: "Custom food was not removed",
         body: error.message,
         tone: "danger",
       });
@@ -256,23 +346,27 @@ export function CustomFoodScreen() {
     );
   }
 
+  if (mealLogged) {
+    return (
+      <CustomFoodLoggedScreen
+        onViewToday={() => router.replace("/")}
+        onCreateAnother={() => router.replace("/custom-food")}
+      />
+    );
+  }
+
   return (
-    <SafeAreaView style={styles.screen}>
-      <KeyboardAvoidingView
-        style={styles.keyboardAvoider}
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
-      >
-        <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
-          <ScrollView
-            contentContainerStyle={styles.content}
-            keyboardDismissMode="on-drag"
-            keyboardShouldPersistTaps="handled"
-          >
+    <KeyboardAvoidingView
+      style={styles.keyboardAvoider}
+      behavior={Platform.OS === "ios" ? "padding" : "height"}
+    >
+      <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
+        <ScreenShell contentStyle={styles.content}>
             <View style={styles.headerRow}>
               <View style={styles.headerCopy}>
-                <Text style={styles.eyebrow}>Custom food</Text>
-                <Text style={styles.title}>{isEditing ? "Correct, verify, reuse." : "Create, verify, log."}</Text>
-                <Text style={styles.body}>
+                <Text style={[styles.eyebrow, themed.muted]}>Custom food</Text>
+                <Text style={[styles.title, themed.ink]}>{isEditing ? "Correct, verify, reuse." : "Create, verify, log."}</Text>
+                <Text style={[styles.body, themed.muted]}>
                   {isEditing
                     ? "Update the saved per-100g values for this user-created food, then save or log a new portion."
                     : barcode
@@ -283,10 +377,11 @@ export function CustomFoodScreen() {
               <Link href={isEditing ? "/saved-foods" : "/"} asChild>
                 <Pressable
                   accessibilityRole="button"
+                  accessibilityLabel="Close custom food editor"
                   style={styles.textButton}
                   onPress={clearLabelDraft}
                 >
-                  <Text style={styles.textButtonLabel}>Close</Text>
+                  <Text style={[styles.textButtonLabel, themed.actionText]}>Close</Text>
                 </Pressable>
               </Link>
             </View>
@@ -303,7 +398,18 @@ export function CustomFoodScreen() {
               <InlineNotice title="Custom food could not load" body={foodDetail.error.message} tone="danger" />
             ) : null}
 
-            {notice ? <InlineNotice title={notice.title} body={notice.body} tone={notice.tone} /> : null}
+            {notice ? (
+              <InlineNotice
+                title={notice.title}
+                body={notice.body}
+                tone={notice.tone}
+                actions={
+                  notice.queued
+                    ? [{ label: "Go to Today", onPress: () => router.replace("/"), variant: "secondary" }]
+                    : undefined
+                }
+              />
+            ) : null}
 
             {labelCaptured ? (
               <>
@@ -334,10 +440,10 @@ export function CustomFoodScreen() {
                         title="Visible label values"
                         meta={labelBasisLabel(labelDraft.analysis.nutritionBasis)}
                       />
-                      <Text style={styles.labelValueSummary}>
+                      <Text style={[styles.labelValueSummary, themed.ink]}>
                         {labelNutrientSummary(labelDraft.analysis.labelNutrients)}
                       </Text>
-                      <Text style={styles.labelValueCaption}>
+                      <Text style={[styles.labelValueCaption, themed.muted]}>
                         The editable fields below are per 100g only when a reliable conversion was possible.
                       </Text>
                     </Card>
@@ -352,13 +458,14 @@ export function CustomFoodScreen() {
                   accessibilityRole="checkbox"
                   accessibilityState={{ checked: labelValuesReviewed }}
                   accessibilityLabel="Confirm nutrition label values were manually reviewed"
-                  style={styles.reviewCheck}
+                  accessibilityHint="Required before saving a food created from a nutrition-label photo."
+                  style={[styles.reviewCheck, themed.subsurface]}
                   onPress={() => setLabelValuesReviewed((current) => !current)}
                 >
-                  <View style={[styles.reviewBox, labelValuesReviewed ? styles.reviewBoxChecked : undefined]}>
+                  <View style={[styles.reviewBox, themed.reviewBox, labelValuesReviewed ? styles.reviewBoxChecked : undefined]}>
                     <Text style={styles.reviewCheckMark}>{labelValuesReviewed ? "✓" : ""}</Text>
                   </View>
-                  <Text style={styles.reviewText}>
+                  <Text style={[styles.reviewText, themed.ink]}>
                     {labelDraft?.analysis
                       ? "I compared every extracted value with the original label and corrected any errors."
                       : "I reviewed the nutrition label photo and manually entered these values."}
@@ -439,6 +546,37 @@ export function CustomFoodScreen() {
                 disabled={saveOnlyMutation.isPending || createAndLogMutation.isPending}
                 variant="secondary"
               />
+              {isEditing ? (
+                deleteConfirmationOpen ? (
+                  <InlineNotice
+                    title={`Remove ${displayName || "this custom food"}?`}
+                    body="This removes the reusable custom food and its saved-food links. Meals you already logged keep their saved nutrition snapshots."
+                    tone="warning"
+                    actions={[
+                      {
+                        label: "Keep food",
+                        onPress: () => setDeleteConfirmationOpen(false),
+                        variant: "secondary",
+                        disabled: deleteMutation.isPending,
+                      },
+                      {
+                        label: deleteMutation.isPending ? "Removing..." : "Remove food",
+                        onPress: () => deleteMutation.mutate(),
+                        variant: "danger",
+                        disabled: deleteMutation.isPending,
+                      },
+                    ]}
+                  />
+                ) : (
+                  <ActionButton
+                    label="Remove custom food"
+                    variant="danger"
+                    onPress={() => setDeleteConfirmationOpen(true)}
+                    disabled={saveOnlyMutation.isPending || createAndLogMutation.isPending}
+                    accessibilityHint="Opens a confirmation. Logged meals keep their saved nutrition snapshots."
+                  />
+                )
+              ) : null}
             </Card>
 
             <Card>
@@ -469,10 +607,39 @@ export function CustomFoodScreen() {
                 disabled={createAndLogMutation.isPending || saveOnlyMutation.isPending}
               />
             </Card>
-          </ScrollView>
-        </TouchableWithoutFeedback>
-      </KeyboardAvoidingView>
-    </SafeAreaView>
+        </ScreenShell>
+      </TouchableWithoutFeedback>
+    </KeyboardAvoidingView>
+  );
+}
+
+function CustomFoodLoggedScreen({
+  onViewToday,
+  onCreateAnother,
+}: {
+  onViewToday: () => void;
+  onCreateAnother: () => void;
+}) {
+  const { palette } = useTheme();
+  const themed = customFoodThemeStyles(palette);
+
+  return (
+    <ScreenShell contentStyle={styles.savedScreenContent}>
+      <View style={styles.savedState}>
+        <View accessible accessibilityLabel="Meal saved" style={[styles.savedMark, themed.savedMark]}>
+          <Ionicons name="checkmark" size={32} color={colors.white} />
+        </View>
+        <Text style={[styles.eyebrow, themed.actionText]}>Saved to your diary</Text>
+        <Text style={[styles.title, themed.ink]}>Meal saved.</Text>
+        <Text style={[styles.body, themed.muted]}>
+          Your custom food and the portion you entered are saved. Review this user-created record before reusing it.
+        </Text>
+        <View style={styles.savedActions}>
+          <ActionButton label="View Today" onPress={onViewToday} />
+          <ActionButton label="Create another food" variant="secondary" onPress={onCreateAnother} />
+        </View>
+      </View>
+    </ScreenShell>
   );
 }
 
@@ -568,16 +735,20 @@ function LabeledInput({
   keyboardType?: "default" | "decimal-pad";
   placeholder?: string;
 }) {
+  const { palette } = useTheme();
+  const themed = customFoodThemeStyles(palette);
+
   return (
     <View style={styles.inputWrap}>
-      <Text style={styles.inputLabel}>{label}</Text>
+      <Text style={[styles.inputLabel, themed.muted]}>{label}</Text>
       <TextInput
-        style={styles.input}
+        style={[styles.input, themed.input]}
         accessibilityLabel={label}
         value={value}
         onChangeText={onChangeText}
         keyboardType={keyboardType}
         placeholder={placeholder}
+        placeholderTextColor={palette.muted}
         autoCapitalize="none"
         returnKeyType="done"
         blurOnSubmit
@@ -659,11 +830,26 @@ function validateCustomFood({
   return undefined;
 }
 
+function customFoodThemeStyles(palette: ThemePalette) {
+  return {
+    ink: { color: palette.ink },
+    muted: { color: palette.muted },
+    actionText: { color: palette.actionText },
+    subsurface: { backgroundColor: palette.surfaceAlt },
+    reviewBox: {
+      backgroundColor: palette.controlSurface,
+      borderColor: colors.green,
+    },
+    input: {
+      backgroundColor: palette.controlSurface,
+      borderColor: palette.border,
+      color: palette.ink,
+    },
+    savedMark: { backgroundColor: palette.mode === "dark" ? colors.green : colors.greenDeep },
+  };
+}
+
 const styles = StyleSheet.create({
-  screen: {
-    flex: 1,
-    backgroundColor: colors.background,
-  },
   keyboardAvoider: {
     flex: 1,
   },
@@ -770,5 +956,29 @@ const styles = StyleSheet.create({
     ...typography.body,
     color: colors.ink,
     flex: 1,
+  },
+  savedScreenContent: {
+    flexGrow: 1,
+    justifyContent: "center",
+  },
+  savedState: {
+    alignItems: "center",
+    justifyContent: "center",
+    gap: spacing.md,
+    paddingVertical: spacing.xxl,
+    paddingHorizontal: spacing.md,
+  },
+  savedMark: {
+    width: 72,
+    height: 72,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: radii.pill,
+    backgroundColor: colors.greenDeep,
+  },
+  savedActions: {
+    alignSelf: "stretch",
+    gap: spacing.sm,
+    marginTop: spacing.md,
   },
 });

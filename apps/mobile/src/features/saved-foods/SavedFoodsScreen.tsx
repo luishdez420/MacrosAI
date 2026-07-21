@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Alert, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 
 import type { FoodSearchResult } from "@living-nutrition/shared-types";
-import { colors, spacing, typography } from "@living-nutrition/design-tokens";
+import { colors, spacing, typography, type ThemePalette } from "@living-nutrition/design-tokens";
 import { api } from "../../services/api";
 import {
   ActionButton,
@@ -16,6 +16,7 @@ import {
   SourceBadge,
   StatusPill,
 } from "../../shared/components/LivingUI";
+import { useTheme } from "../../shared/theme/ThemeProvider";
 import { foodDetailHref } from "../food-detail/foodDetailLinks";
 import { servingSummary } from "../food-logging/foodLogging";
 import {
@@ -31,6 +32,8 @@ import {
 
 export function SavedFoodsScreen() {
   const queryClient = useQueryClient();
+  const { palette } = useTheme();
+  const themed = savedFoodsThemeStyles(palette);
   const [searchQuery, setSearchQuery] = useState("");
   const [activeFilter, setActiveFilter] = useState<SavedFoodFilter>("all");
   const [activeSort, setActiveSort] = useState<SavedFoodSort>("default");
@@ -121,9 +124,9 @@ export function SavedFoodsScreen() {
   return (
     <ScreenShell>
       <View style={styles.header}>
-        <Text style={styles.eyebrow}>Saved foods</Text>
-        <Text style={styles.title}>Keep repeat logging tidy.</Text>
-        <Text style={styles.body}>
+        <Text style={[styles.eyebrow, themed.muted]}>Saved foods</Text>
+        <Text style={[styles.title, themed.ink]}>Keep repeat logging tidy.</Text>
+        <Text style={[styles.body, themed.muted]}>
           Search across favorites, recents, and custom foods. Favorites are pinned on purpose;
           recents are filled automatically when you log meals.
         </Text>
@@ -133,30 +136,30 @@ export function SavedFoodsScreen() {
         <SectionHeader title="Find saved foods" meta={`${filterOptions[0].count} visible`} />
         <TextInput
           accessibilityLabel="Search saved foods"
-          style={styles.searchInput}
+          style={[styles.searchInput, themed.input]}
           value={searchQuery}
           onChangeText={setSearchQuery}
           placeholder="Search name, brand, source, or serving..."
+          placeholderTextColor={palette.muted}
           autoCapitalize="none"
           returnKeyType="search"
         />
-        <View style={styles.filterRow}>
+        <View testID="saved-food-filter-controls" style={[styles.filterRow, styles.filterRowAfterSearch]}>
           {filterOptions.map((option) => (
             <Pressable
               key={option.value}
               accessibilityRole="button"
               accessibilityLabel={`Show ${savedFoodFilterLabel(option.value)} saved foods`}
+              accessibilityState={{ selected: activeFilter === option.value }}
               style={[
                 styles.filterChip,
+                themed.controlSurface,
                 activeFilter === option.value ? styles.activeFilterChip : undefined,
               ]}
               onPress={() => setActiveFilter(option.value)}
             >
               <Text
-                style={[
-                  styles.filterChipText,
-                  activeFilter === option.value ? styles.activeFilterChipText : undefined,
-                ]}
+                style={[styles.filterChipText, { color: activeFilter === option.value ? palette.onPrimary : palette.ink }]}
               >
                 {savedFoodFilterLabel(option.value)} {option.count}
               </Text>
@@ -164,24 +167,23 @@ export function SavedFoodsScreen() {
           ))}
         </View>
         <View style={styles.sortBlock}>
-          <Text style={styles.sortLabel}>Sort visible foods</Text>
+          <Text style={[styles.sortLabel, themed.muted]}>Sort visible foods</Text>
           <View style={styles.filterRow}>
             {sortOptions.map((option) => (
               <Pressable
                 key={option}
                 accessibilityRole="button"
                 accessibilityLabel={`Sort saved foods by ${savedFoodSortLabel(option)}`}
+                accessibilityState={{ selected: activeSort === option }}
                 style={[
                   styles.sortChip,
-                  activeSort === option ? styles.activeSortChip : undefined,
+                  themed.subsurface,
+                  activeSort === option ? themed.activeSortChip : undefined,
                 ]}
                 onPress={() => setActiveSort(option)}
               >
                 <Text
-                  style={[
-                    styles.sortChipText,
-                    activeSort === option ? styles.activeSortChipText : undefined,
-                  ]}
+                  style={[styles.sortChipText, { color: activeSort === option ? palette.onPrimary : palette.ink }]}
                 >
                   {savedFoodSortLabel(option)}
                 </Text>
@@ -266,8 +268,12 @@ export function SavedFoodsScreen() {
       ) : null}
 
       <Link href="/manual-search" asChild>
-        <Pressable accessibilityRole="button" style={styles.manualLink}>
-          <Text style={styles.manualLinkText}>Back to manual search</Text>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Return to manual food search"
+          style={styles.manualLink}
+        >
+          <Text style={[styles.manualLinkText, themed.actionText]}>Back to manual search</Text>
         </Pressable>
       </Link>
     </ScreenShell>
@@ -301,6 +307,9 @@ function SavedFoodSection({
   removing: boolean;
   bulkRemoving: boolean;
 }) {
+  const { palette } = useTheme();
+  const themed = savedFoodsThemeStyles(palette);
+
   return (
     <Card>
       <SectionHeader title={title} meta={isLoading ? "Loading..." : meta} />
@@ -310,17 +319,18 @@ function SavedFoodSection({
           variant="secondary"
           onPress={onBulkRemove}
           disabled={bulkRemoving || removing}
+          style={styles.bulkAction}
         />
       ) : null}
       <View style={styles.list}>
         {items.length ? (
           items.map((item) => (
-            <View key={item.id} style={styles.foodRow}>
+            <View key={item.id} style={[styles.foodRow, themed.controlSurface]}>
               <View style={styles.foodCopy}>
-                <Text numberOfLines={2} style={styles.foodTitle}>
+                <Text numberOfLines={2} style={[styles.foodTitle, themed.ink]}>
                   {readableFoodName(item.displayName)}
                 </Text>
-                <Text numberOfLines={1} style={styles.foodMeta}>
+                <Text numberOfLines={1} style={[styles.foodMeta, themed.muted]}>
                   {Math.round(item.nutrientsPer100g.caloriesKcal)} kcal per 100g - {servingSummary(item)}
                 </Text>
                 <View style={styles.badgeRow}>
@@ -336,15 +346,19 @@ function SavedFoodSection({
                   <Pressable
                     accessibilityRole="button"
                     accessibilityLabel={`View nutrition source for ${readableFoodName(item.displayName)}`}
-                    style={styles.sourceButton}
+                    style={[styles.sourceButton, themed.subsurface]}
                   >
-                    <Text style={styles.sourceButtonText}>Source</Text>
+                    <Text style={[styles.sourceButtonText, themed.actionText]}>Source</Text>
                   </Pressable>
                 </Link>
                 {actionHref ? (
                   <Link href={actionHref(item.id)} asChild>
-                    <Pressable accessibilityRole="button" style={styles.sourceButton}>
-                      <Text style={styles.sourceButtonText}>{actionLabel}</Text>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={`${actionLabel} ${readableFoodName(item.displayName)}`}
+                      style={[styles.sourceButton, themed.subsurface]}
+                    >
+                      <Text style={[styles.sourceButtonText, themed.actionText]}>{actionLabel}</Text>
                     </Pressable>
                   </Link>
                 ) : (
@@ -359,11 +373,27 @@ function SavedFoodSection({
             </View>
           ))
         ) : (
-          <Text style={styles.empty}>{isLoading ? "Loading saved foods..." : emptyText}</Text>
+          <Text style={[styles.empty, themed.muted]}>{isLoading ? "Loading saved foods..." : emptyText}</Text>
         )}
       </View>
     </Card>
   );
+}
+
+function savedFoodsThemeStyles(palette: ThemePalette) {
+  return {
+    ink: { color: palette.ink },
+    muted: { color: palette.muted },
+    actionText: { color: palette.actionText },
+    controlSurface: { backgroundColor: palette.controlSurface },
+    subsurface: { backgroundColor: palette.surfaceAlt },
+    activeSortChip: { backgroundColor: colors.green },
+    input: {
+      backgroundColor: palette.controlSurface,
+      borderColor: palette.border,
+      color: palette.ink,
+    },
+  };
 }
 
 const styles = StyleSheet.create({
@@ -385,6 +415,9 @@ const styles = StyleSheet.create({
   list: {
     gap: spacing.sm,
   },
+  bulkAction: {
+    marginBottom: spacing.sm,
+  },
   searchInput: {
     minHeight: 52,
     borderRadius: 18,
@@ -397,8 +430,11 @@ const styles = StyleSheet.create({
     flexWrap: "wrap",
     gap: spacing.sm,
   },
+  filterRowAfterSearch: {
+    marginTop: spacing.sm,
+  },
   filterChip: {
-    minHeight: 42,
+    minHeight: 44,
     justifyContent: "center",
     borderRadius: 999,
     paddingHorizontal: spacing.md,
@@ -422,7 +458,7 @@ const styles = StyleSheet.create({
     color: colors.muted,
   },
   sortChip: {
-    minHeight: 38,
+    minHeight: 44,
     justifyContent: "center",
     borderRadius: 999,
     paddingHorizontal: spacing.md,

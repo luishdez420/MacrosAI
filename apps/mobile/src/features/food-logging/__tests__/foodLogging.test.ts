@@ -1,9 +1,11 @@
 import {
+  createMealFromFood,
   gramsForPortion,
   portionAmountForGrams,
   portionInputLabel,
   portionLabel,
 } from "../foodLogging";
+import type { FoodSearchResult } from "@living-nutrition/shared-types";
 
 describe("food logging portions", () => {
   it("converts ounces to grams before nutrition calculations", () => {
@@ -32,4 +34,55 @@ describe("food logging portions", () => {
       "1 serving (gram weight not verified)"
     );
   });
+
+  it("preserves the source quality assessment in a newly logged meal snapshot", () => {
+    const meal = createMealFromFood({
+      food: qualityAssessedFood(),
+      grams: 150,
+      servingLabel: "150g",
+      nutrients: {
+        caloriesKcal: 165,
+        proteinGrams: 31,
+        carbohydrateGrams: 0,
+        fatGrams: 3.6,
+      },
+      servingQuantity: 150,
+      portionMode: "grams",
+      source: "manual",
+    });
+
+    expect(meal.items[0]?.nutrientSnapshotJson).toMatchObject({
+      qualityAssessment: {
+        status: "needs_review",
+        signals: ["provider_record", "stale_source"],
+        isBlocking: false,
+      },
+    });
+  });
 });
+
+function qualityAssessedFood(): FoodSearchResult {
+  return {
+    id: "usda:chicken",
+    displayName: "Chicken breast, roasted",
+    provider: "usda",
+    externalId: "chicken",
+    dataType: "Foundation",
+    brandOwner: null,
+    nutrientsPer100g: {
+      caloriesKcal: 110,
+      proteinGrams: 20.7,
+      carbohydrateGrams: 0,
+      fatGrams: 2.4,
+    },
+    qualityFlags: ["stale_source_record"],
+    qualityAssessment: {
+      status: "needs_review",
+      signals: ["provider_record", "stale_source"],
+      summary: "The cached source is stale. Review before logging.",
+      isBlocking: false,
+    },
+    recordConfidence: "medium",
+    sourceReference: "USDA fixture",
+  };
+}

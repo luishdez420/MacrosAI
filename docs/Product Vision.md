@@ -95,7 +95,7 @@ The MVP should focus on:
 - Basic goals.
 - Camera-assisted estimates with clear review language.
 
-The MVP should not attempt to complete the full production product in one pass. Privacy, production auth, full camera correction, offline sync, insights, recipes, and app-store hardening remain roadmap work.
+The MVP should not attempt to complete the full production product in one pass. Privacy, production auth, full camera correction, offline sync, richer insights and recipe organization, and app-store hardening remain roadmap work.
 
 ## Longer-term direction
 
@@ -105,7 +105,7 @@ The longer-term product direction is a premium, transparent nutrition tracker th
 - Strong source provenance.
 - Packaged-food and label workflows.
 - Camera-assisted meal entry with robust confirmation.
-- Recipes and insights.
+- Recipe editing/organization and richer insights.
 - Weight and goal tracking.
 - Data export and deletion.
 - Privacy-forward image handling.

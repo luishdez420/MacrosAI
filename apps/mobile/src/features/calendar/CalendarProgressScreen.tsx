@@ -1,17 +1,22 @@
 import { useQuery } from "@tanstack/react-query";
-import Svg, { Circle, Line, Polyline, Text as SvgText } from "react-native-svg";
-import { StyleSheet, Text, View } from "react-native";
+import Svg, { Circle, Polyline, Text as SvgText } from "react-native-svg";
+import { useState } from "react";
+import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 
-import { colors, radii, spacing, typography } from "@living-nutrition/design-tokens";
+import { colors, radii, spacing, typography, type ThemePalette } from "@living-nutrition/design-tokens";
+import type { WeightEntry } from "@living-nutrition/shared-types";
 import { api } from "../../services/api";
 import {
   Card,
+  ErrorState,
+  GlassIconButton,
   InlineNotice,
   MacroStatTile,
   ScreenShell,
   SectionHeader,
   StatusPill,
 } from "../../shared/components/LivingUI";
+import { useTheme } from "../../shared/theme/ThemeProvider";
 
 const fallbackCalorieGoal = 2200;
 const chartWidth = 320;
@@ -20,72 +25,169 @@ const chartPaddingX = 24;
 const chartTopPadding = 18;
 const chartBottomPadding = 32;
 
+type ProgressRange = "7" | "30" | "90" | "custom";
+
+const rangeOptions: Array<{ value: Exclude<ProgressRange, "custom">; label: string }> = [
+  { value: "7", label: "7 days" },
+  { value: "30", label: "30 days" },
+  { value: "90", label: "3 months" },
+];
+
+type ProgressDay = {
+  key: string;
+  shortLabel: string;
+  calorieTarget: number;
+  calories: number;
+  proteinGrams: number;
+  fiberGrams: number;
+  goalMet: boolean;
+  hasLoggedMeals: boolean;
+};
+
 export function CalendarProgressScreen() {
-  const weekStartDate = lastSevenDays()[0].key;
-  const currentMonth = new Date().toISOString().slice(0, 7);
-  const weeklyInsights = useQuery({
-    queryKey: ["insights", "weekly", weekStartDate],
-    queryFn: () => api.getWeeklyInsights(weekStartDate),
+  const { palette } = useTheme();
+  const themed = progressThemeStyles(palette);
+  const today = localTodayKey();
+  const [selectedRange, setSelectedRange] = useState<ProgressRange>("7");
+  const [customStartDate, setCustomStartDate] = useState(() => addDays(today, -6));
+  const [customEndDate, setCustomEndDate] = useState(today);
+  const [selectedMonth, setSelectedMonth] = useState(currentMonthKey);
+  const rangeWindow = getRangeWindow(selectedRange, today, customStartDate, customEndDate);
+  const rangeInsights = useQuery({
+    queryKey: ["insights", "range", rangeWindow?.startDate, rangeWindow?.endDate],
+    queryFn: () => api.getRangeInsights(rangeWindow?.startDate ?? "", rangeWindow?.endDate ?? ""),
+    enabled: Boolean(rangeWindow),
     retry: 1,
   });
   const monthlyInsights = useQuery({
-    queryKey: ["insights", "monthly", currentMonth],
-    queryFn: () => api.getMonthlyInsights(currentMonth),
+    queryKey: ["insights", "monthly", selectedMonth],
+    queryFn: () => api.getMonthlyInsights(selectedMonth),
     retry: 1,
   });
-  const fallbackDays = lastSevenDays().map((day) => ({
+  const preferences = useQuery({
+    queryKey: ["preferences"],
+    queryFn: () => api.getPreferences(),
+    retry: 1,
+  });
+  const weightEntries = useQuery({
+    queryKey: ["weight", "progress"],
+    queryFn: () => api.listWeightEntries(365),
+    enabled: Boolean(rangeWindow),
+    retry: 1,
+  });
+  const fallbackDays = buildDateRange(addDays(today, -6), today).map((day) => ({
     ...day,
     calories: 0,
+    calorieTarget: fallbackCalorieGoal,
     proteinGrams: 0,
+    fiberGrams: 0,
     goalMet: false,
     hasLoggedMeals: false,
   }));
-  const calorieTarget = weeklyInsights.data?.calorieTarget ?? fallbackCalorieGoal;
-  const progressDays = weeklyInsights.data
-    ? weeklyInsights.data.days.map((day) => {
+  const calorieTarget = rangeInsights.data?.calorieTarget ?? fallbackCalorieGoal;
+  const progressDays: ProgressDay[] = rangeInsights.data
+    ? rangeInsights.data.days.map((day) => {
         const shortLabel = new Intl.DateTimeFormat(undefined, { weekday: "short" }).format(
           new Date(`${day.date}T12:00:00`)
         );
         return {
           key: day.date,
           shortLabel,
+          calorieTarget: day.calorieTarget,
           calories: day.totals.calories,
           proteinGrams: day.totals.proteinGrams,
+          fiberGrams: day.totals.fiberGrams,
           goalMet: day.goalMet,
           hasLoggedMeals: day.mealCount > 0,
         };
       })
     : fallbackDays;
-  const goalMetCount = weeklyInsights.data?.goalDays ?? 0;
-  const averageCalories = weeklyInsights.data?.averageCalories ?? 0;
-  const isLoading = weeklyInsights.isLoading;
-  const firstError = weeklyInsights.error ?? monthlyInsights.error;
+  const goalMetCount = rangeInsights.data?.goalDays ?? 0;
+  const averageCalories = rangeInsights.data?.averageCalories ?? 0;
+  const averageFiber = rangeInsights.data?.averageFiberGrams ?? 0;
+  const isLoading = rangeInsights.isLoading;
+  const rangeDuration = rangeInsights.data?.durationDays ?? progressDays.length;
+  const selectedDay = progressDays.at(-1);
+  const loggedDays = rangeInsights.data?.loggedDays ?? progressDays.filter((day) => day.hasLoggedMeals).length;
+  const averageProtein = rangeInsights.data?.averageProteinGrams ?? 0;
+  const proteinLoggedDays = progressDays.filter((day) => day.hasLoggedMeals && day.proteinGrams > 0).length;
+  const fiberLoggedDays = progressDays.filter((day) => day.hasLoggedMeals && day.fiberGrams > 0).length;
+  const isCurrentMonth = selectedMonth === currentMonthKey();
+  const weightInsight = buildWeightRangeInsight(
+    weightEntries.data ?? [],
+    rangeWindow?.startDate,
+    rangeWindow?.endDate,
+    preferences.data?.unitSystem ?? "metric",
+    preferences.data?.goalDirection ?? "maintain"
+  );
 
   return (
     <ScreenShell>
-      <View style={styles.header}>
-        <Text style={styles.eyebrow}>Progress</Text>
-        <Text style={styles.title}>Your week at a glance.</Text>
-        <Text style={styles.body}>
-          See how your saved meals line up with your calorie goal. This is based on logged diary
-          snapshots, not camera guesses.
+      <Card tone="insight" style={styles.progressHero}>
+        <Text style={[styles.eyebrow, themed.muted]}>Progress</Text>
+        <Text style={[styles.title, themed.ink]}>A calmer view of your rhythm.</Text>
+        <Text style={[styles.body, themed.muted]}>
+          Your story is based on saved meal snapshots and your daily target, not unconfirmed camera estimates.
         </Text>
-      </View>
+        <View style={styles.rangeControls}>
+          {rangeOptions.map((option) => (
+            <Pressable
+              key={option.value}
+              accessibilityRole="button"
+              accessibilityLabel={`Show ${option.label} of progress`}
+              accessibilityState={{ selected: selectedRange === option.value }}
+              onPress={() => setSelectedRange(option.value)}
+              style={[styles.rangeChip, themed.rangeChip, selectedRange === option.value ? [styles.rangeChipSelected, themed.rangeChipSelected] : undefined]}
+            >
+              <Text style={[styles.rangeChipText, { color: selectedRange === option.value ? palette.onPrimary : palette.ink }]}>{option.label}</Text>
+            </Pressable>
+          ))}
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Choose a custom progress date range"
+            accessibilityState={{ selected: selectedRange === "custom" }}
+            onPress={() => setSelectedRange("custom")}
+            style={[styles.rangeChip, themed.rangeChip, selectedRange === "custom" ? [styles.rangeChipSelected, themed.rangeChipSelected] : undefined]}
+          >
+            <Text style={[styles.rangeChipText, { color: selectedRange === "custom" ? palette.onPrimary : palette.ink }]}>Custom</Text>
+          </Pressable>
+        </View>
+        {selectedRange === "custom" ? (
+          <View style={styles.customRangeRow}>
+            <TextInput
+              accessibilityLabel="Custom range start date in year month day format"
+              style={[styles.dateInput, themed.dateInput]}
+              value={customStartDate}
+              onChangeText={setCustomStartDate}
+              placeholder="2026-07-01"
+              placeholderTextColor={palette.muted}
+              keyboardType="numbers-and-punctuation"
+              maxLength={10}
+            />
+            <Text style={[styles.rangeHint, themed.muted]}>to</Text>
+            <TextInput
+              accessibilityLabel="Custom range end date in year month day format"
+              style={[styles.dateInput, themed.dateInput]}
+              value={customEndDate}
+              onChangeText={setCustomEndDate}
+              placeholder="2026-07-31"
+              placeholderTextColor={palette.muted}
+              keyboardType="numbers-and-punctuation"
+              maxLength={10}
+            />
+          </View>
+        ) : null}
+        {!rangeWindow ? <InlineNotice title="Review custom range" body="Use valid YYYY-MM-DD dates, with an end date on or after the start and no more than 366 days apart." tone="warning" /> : null}
+      </Card>
 
-      {firstError ? (
-        <InlineNotice
-          title="Progress could not fully load"
-          body={firstError.message}
-          tone="warning"
-        />
-      ) : null}
+      {rangeInsights.error ? <ErrorState title="Progress could not load" body={rangeInsights.error.message} onRetry={() => void rangeInsights.refetch()} /> : null}
 
       <Card>
         <SectionHeader
           title="Calories vs goal"
-          meta={isLoading ? "Loading..." : `${goalMetCount} goal days`}
+          meta={isLoading ? "Loading..." : `${goalMetCount} goal days in ${rangeDuration}`}
         />
-        <ProgressChart days={progressDays} calorieTarget={calorieTarget} />
+        <ProgressChart days={progressDays} selectedDayKey={selectedDay?.key} />
         <View style={styles.legendRow}>
           <LegendDot color={colors.green} label="Logged calories" />
           <LegendDot color={colors.lime} label="Goal line" />
@@ -94,43 +196,72 @@ export function CalendarProgressScreen() {
       </Card>
 
       <View style={styles.metricRow}>
-        <MacroStatTile label="Goal days" value={goalMetCount} suffix="/7" tone="success" />
+        <MacroStatTile label="Goal days" value={goalMetCount} suffix={`/${rangeDuration}`} tone="success" />
         <MacroStatTile label="Avg kcal" value={averageCalories || "-"} tone="neutral" />
-        <MacroStatTile label="Target" value={Math.round(calorieTarget)} suffix="kcal" tone="carbs" />
+        <MacroStatTile label="Avg protein" value={averageProtein ? Math.round(averageProtein) : "-"} suffix={averageProtein ? "g" : undefined} tone="protein" />
       </View>
 
-      <Card>
-        <SectionHeader title="Daily check-ins" meta="Last 7 days" />
-        <View style={styles.dayList}>
-          {progressDays.map((day) => (
-            <View key={day.key} style={styles.dayRow}>
-              <View style={styles.dayCopy}>
-                <Text style={styles.dayLabel}>{day.shortLabel}</Text>
-                <Text style={styles.dayMeta}>
-                  {day.hasLoggedMeals
-                    ? `${Math.round(day.calories)} kcal - ${Math.round(day.proteinGrams)}g protein`
-                    : "No meals logged"}
-                </Text>
-              </View>
-              <StatusPill
-                label={day.goalMet ? "Goal met" : day.hasLoggedMeals ? "Review" : "No log"}
-                tone={day.goalMet ? "success" : day.hasLoggedMeals ? "warning" : "neutral"}
-              />
-            </View>
-          ))}
+      <Card tone="soft" style={styles.insightCard}>
+        <Text style={[styles.insightEyebrow, themed.insightText]}>Selected-period observation</Text>
+        <Text style={[styles.insightTitle, themed.ink]}>{rangeInsightCopy(goalMetCount, progressDays.filter((day) => day.hasLoggedMeals).length, rangeDuration)}</Text>
+        <Text style={[styles.body, themed.muted]}>This is a diary pattern, not medical advice. A missed day is simply a new place to start your rhythm.</Text>
+      </Card>
+
+      <Card tone="soft" style={styles.insightCard}>
+        <View accessible accessibilityLabel={loggingRhythmAccessibilityLabel(loggedDays, proteinLoggedDays, fiberLoggedDays, rangeDuration)}>
+          <Text style={[styles.insightEyebrow, themed.insightText]}>Logging rhythm</Text>
+          <Text style={[styles.insightTitle, themed.ink]}>{loggingRhythmCopy(loggedDays, proteinLoggedDays, fiberLoggedDays, rangeDuration)}</Text>
+          <View style={styles.metricRow}>
+            <MacroStatTile label="Meal days" value={loggedDays} suffix={`/${rangeDuration}`} tone="neutral" />
+            <MacroStatTile label="Protein days" value={proteinLoggedDays} suffix="days" tone="protein" />
+            <MacroStatTile label="Fiber days" value={fiberLoggedDays} suffix="days" tone="success" />
+          </View>
+          <Text style={[styles.body, themed.muted]}>This reflects what was saved in your diary, not a nutrition grade or recommendation.</Text>
         </View>
       </Card>
 
+      <Card tone="soft" style={styles.insightCard}>
+        <Text style={[styles.insightEyebrow, themed.insightText]}>Weight rhythm</Text>
+        <Text style={[styles.insightTitle, themed.ink]}>{weightInsight.title}</Text>
+        <Text style={[styles.body, themed.muted]}>{weightInsight.body}</Text>
+      </Card>
+
+      <Card tone="soft" style={styles.focusCard}>
+        <View style={styles.focusHeader}>
+          <View style={styles.focusCopy}>
+            <Text style={[styles.insightEyebrow, themed.insightText]}>Day focus</Text>
+            <Text style={[styles.insightTitle, themed.ink]}>{selectedDay ? formatDayLabel(selectedDay.key) : "Choose a day"}</Text>
+          </View>
+          <StatusPill
+            label={selectedDay?.goalMet ? "Goal met" : selectedDay?.hasLoggedMeals ? "Review" : "No log"}
+            tone={selectedDay?.goalMet ? "success" : selectedDay?.hasLoggedMeals ? "warning" : "neutral"}
+          />
+        </View>
+        <Text style={[styles.body, themed.muted]}>{dayFocusCopy(selectedDay)}</Text>
+      </Card>
+
+      <Card tone="soft" style={styles.insightCard}>
+        <Text style={[styles.insightEyebrow, themed.insightText]}>Nutrition pattern</Text>
+        <Text style={[styles.insightTitle, themed.ink]}>{averageFiber ? `${Math.round(averageFiber)}g average fiber on logged days` : "More logged meals will reveal a fiber pattern."}</Text>
+        <Text style={[styles.body, themed.muted]}>Averages use logged days only, so empty diary days do not look like low intake.</Text>
+      </Card>
+
       <Card>
-        <SectionHeader
-          title="Monthly rhythm"
-          meta={monthlyInsights.isLoading ? "Loading..." : formatMonthLabel(monthlyInsights.data?.month ?? currentMonth)}
-        />
-        <Text style={styles.body}>
+        <View style={styles.monthHeader}>
+          <View style={styles.monthTitleCopy}>
+            <Text style={[styles.monthTitle, themed.ink]}>Monthly rhythm</Text>
+            <Text style={[styles.monthMeta, themed.muted]}>{monthlyInsights.isLoading ? "Loading..." : formatMonthLabel(monthlyInsights.data?.month ?? selectedMonth)}</Text>
+          </View>
+          <View style={styles.monthControls}>
+            <GlassIconButton icon="chevron-back" label="Show previous month" onPress={() => setSelectedMonth((month) => shiftMonth(month, -1))} />
+            <GlassIconButton icon="chevron-forward" label="Show next month" onPress={() => setSelectedMonth((month) => shiftMonth(month, 1))} disabled={isCurrentMonth} />
+          </View>
+        </View>
+        <Text style={[styles.body, themed.muted]}>
           A wider view of logged days and goal days for the calendar month. This is based on saved
           meal snapshots.
         </Text>
-        <View style={styles.metricRow}>
+        <View testID="monthly-rhythm-metrics" style={[styles.metricRow, styles.monthMetricRow]}>
           <MacroStatTile
             label="Logged"
             value={monthlyInsights.data?.loggedDays ?? "-"}
@@ -150,6 +281,7 @@ export function CalendarProgressScreen() {
           />
         </View>
         {monthlyInsights.data ? <MonthlyDotCalendar days={monthlyInsights.data.days} /> : null}
+        {monthlyInsights.error ? <InlineNotice title="Monthly rhythm could not load" body={monthlyInsights.error.message} tone="warning" actions={[{ label: "Try again", onPress: () => void monthlyInsights.refetch(), variant: "secondary" }]} /> : null}
       </Card>
     </ScreenShell>
   );
@@ -157,35 +289,42 @@ export function CalendarProgressScreen() {
 
 function ProgressChart({
   days,
-  calorieTarget,
+  selectedDayKey,
 }: {
-  days: Array<{ key: string; calories: number; goalMet: boolean; shortLabel: string }>;
-  calorieTarget: number;
+  days: ProgressDay[];
+  selectedDayKey?: string;
 }) {
-  const maxCalories = Math.max(calorieTarget, ...days.map((day) => day.calories), 1) * 1.15;
+  const { palette } = useTheme();
+  const maxCalories = Math.max(
+    ...days.map((day) => Math.max(day.calories, day.calorieTarget)),
+    1
+  ) * 1.15;
   const availableWidth = chartWidth - chartPaddingX * 2;
   const availableHeight = chartHeight - chartTopPadding - chartBottomPadding;
-  const goalY = yForCalories(calorieTarget, maxCalories, availableHeight);
   const points = days.map((day, index) => {
     const x = chartPaddingX + (index * availableWidth) / Math.max(days.length - 1, 1);
     const y = yForCalories(day.calories, maxCalories, availableHeight);
     return { ...day, x, y };
   });
+  const goalPoints = points.map((point) => ({
+    ...point,
+    y: yForCalories(point.calorieTarget, maxCalories, availableHeight),
+  }));
+
+  const labelStride = days.length <= 7 ? 1 : days.length <= 31 ? 5 : 14;
 
   return (
-    <View accessible accessibilityLabel="Seven day calorie line chart compared with saved calorie goal.">
+    <View accessible accessibilityLabel={`${days.length} day calorie line chart compared with saved calorie goal.`}>
       <Svg width="100%" height={chartHeight} viewBox={`0 0 ${chartWidth} ${chartHeight}`}>
-        <Line
-          x1={chartPaddingX}
-          y1={goalY}
-          x2={chartWidth - chartPaddingX}
-          y2={goalY}
+        <Polyline
+          points={goalPoints.map((point) => `${point.x},${point.y}`).join(" ")}
+          fill="none"
           stroke={colors.lime}
           strokeWidth={3}
           strokeDasharray="8 8"
         />
-        <SvgText x={chartPaddingX} y={Math.max(goalY - 8, 12)} fill={colors.muted} fontSize="11">
-          goal
+        <SvgText x={chartPaddingX} y={Math.max((goalPoints[0]?.y ?? 20) - 8, 12)} fill={palette.muted} fontSize="11">
+          target
         </SvgText>
         <Polyline
           points={points.map((point) => `${point.x},${point.y}`).join(" ")}
@@ -200,22 +339,22 @@ function ProgressChart({
             key={point.key}
             cx={point.x}
             cy={point.y}
-            r={6}
-            fill={point.goalMet ? colors.green : point.calories > 0 ? colors.coral : colors.surfaceAlt}
-            stroke={colors.white}
-            strokeWidth={2}
+            r={point.key === selectedDayKey ? 8 : 6}
+            fill={point.goalMet ? colors.green : point.calories > 0 ? colors.coral : palette.surfaceAlt}
+            stroke={point.key === selectedDayKey ? palette.ink : palette.surface}
+            strokeWidth={point.key === selectedDayKey ? 3 : 2}
           />
         ))}
-        {points.map((point) => (
+        {points.filter((_, index) => index % labelStride === 0 || index === points.length - 1).map((point) => (
           <SvgText
             key={`${point.key}-label`}
             x={point.x}
             y={chartHeight - 8}
-            fill={colors.muted}
+            fill={palette.muted}
             fontSize="10"
             textAnchor="middle"
           >
-            {point.shortLabel.slice(0, 3)}
+            {days.length <= 7 ? point.shortLabel.slice(0, 3) : point.key.slice(5)}
           </SvgText>
         ))}
       </Svg>
@@ -229,10 +368,11 @@ function yForCalories(calories: number, maxCalories: number, availableHeight: nu
 }
 
 function LegendDot({ color, label }: { color: string; label: string }) {
+  const { palette } = useTheme();
   return (
     <View style={styles.legendItem}>
       <View style={[styles.legendDot, { backgroundColor: color }]} />
-      <Text style={styles.legendLabel}>{label}</Text>
+      <Text style={[styles.legendLabel, { color: palette.muted }]}>{label}</Text>
     </View>
   );
 }
@@ -242,6 +382,7 @@ function MonthlyDotCalendar({
 }: {
   days: Array<{ date: string; mealCount: number; goalMet: boolean }>;
 }) {
+  const { palette } = useTheme();
   return (
     <View
       style={styles.monthGrid}
@@ -255,12 +396,12 @@ function MonthlyDotCalendar({
           ? styles.monthDotGoal
           : day.mealCount > 0
             ? styles.monthDotReview
-            : styles.monthDotEmpty;
+            : { backgroundColor: palette.surfaceAlt };
 
         return (
           <View key={day.date} style={styles.monthDay}>
             <View style={[styles.monthDot, toneStyle]} />
-            <Text style={styles.monthDayLabel}>{dayOfMonth}</Text>
+            <Text style={[styles.monthDayLabel, { color: palette.muted }]}>{dayOfMonth}</Text>
           </View>
         );
       })}
@@ -268,16 +409,95 @@ function MonthlyDotCalendar({
   );
 }
 
-function lastSevenDays() {
-  return Array.from({ length: 7 }, (_, index) => {
-    const date = new Date();
-    date.setDate(date.getDate() - (6 - index));
-    const key = date.toISOString().slice(0, 10);
+function progressThemeStyles(palette: ThemePalette) {
+  return {
+    ink: { color: palette.ink },
+    muted: { color: palette.muted },
+    insightText: { color: palette.mode === "dark" ? "#A9C7F0" : colors.insight },
+    rangeChip: { backgroundColor: palette.controlSurface, borderColor: palette.border },
+    rangeChipSelected: { backgroundColor: colors.insight, borderColor: palette.highlight },
+    dateInput: { backgroundColor: palette.controlSurface, borderColor: palette.border, color: palette.ink },
+  };
+}
+
+function getRangeWindow(
+  range: ProgressRange,
+  today: string,
+  customStartDate: string,
+  customEndDate: string
+) {
+  if (range === "custom") {
+    return validRangeWindow(customStartDate, customEndDate);
+  }
+
+  const duration = Number(range);
+  return {
+    startDate: addDays(today, -(duration - 1)),
+    endDate: today,
+  };
+}
+
+function validRangeWindow(startDate: string, endDate: string) {
+  if (!isValidDateKey(startDate) || !isValidDateKey(endDate)) {
+    return undefined;
+  }
+
+  const duration = differenceInDays(startDate, endDate) + 1;
+  if (duration <= 0 || duration > 366) {
+    return undefined;
+  }
+
+  return { startDate, endDate };
+}
+
+function buildDateRange(startDate: string, endDate: string) {
+  const duration = differenceInDays(startDate, endDate) + 1;
+  if (duration <= 0) {
+    return [];
+  }
+
+  return Array.from({ length: duration }, (_, index) => {
+    const key = addDays(startDate, index);
     return {
       key,
-      shortLabel: new Intl.DateTimeFormat(undefined, { weekday: "short" }).format(date),
+      shortLabel: new Intl.DateTimeFormat(undefined, { weekday: "short" }).format(
+        new Date(`${key}T12:00:00`)
+      ),
     };
   });
+}
+
+function localTodayKey() {
+  return formatLocalDate(new Date());
+}
+
+function addDays(dateKey: string, amount: number) {
+  const date = new Date(`${dateKey}T12:00:00`);
+  date.setDate(date.getDate() + amount);
+  return formatLocalDate(date);
+}
+
+function formatLocalDate(date: Date) {
+  return [date.getFullYear(), String(date.getMonth() + 1).padStart(2, "0"), String(date.getDate()).padStart(2, "0")].join("-");
+}
+
+function differenceInDays(startDate: string, endDate: string) {
+  const start = new Date(`${startDate}T12:00:00`);
+  const end = new Date(`${endDate}T12:00:00`);
+  return Math.round((end.getTime() - start.getTime()) / 86_400_000);
+}
+
+function isValidDateKey(value: string) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) {
+    return false;
+  }
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(year, month - 1, day, 12);
+  return date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day;
 }
 
 function formatMonthLabel(month: string) {
@@ -290,10 +510,111 @@ function formatMonthLabel(month: string) {
   return new Intl.DateTimeFormat(undefined, { month: "long", year: "numeric" }).format(date);
 }
 
+function currentMonthKey() {
+  return new Date().toISOString().slice(0, 7);
+}
+
+function shiftMonth(month: string, amount: number) {
+  const date = new Date(`${month}-01T12:00:00`);
+  date.setMonth(date.getMonth() + amount);
+  return date.toISOString().slice(0, 7);
+}
+
+function formatDayLabel(dateKey: string) {
+  const date = new Date(`${dateKey}T12:00:00`);
+
+  if (Number.isNaN(date.getTime())) {
+    return dateKey;
+  }
+
+  return new Intl.DateTimeFormat(undefined, { weekday: "long", month: "short", day: "numeric" }).format(date);
+}
+
+function dayFocusCopy(day: ProgressDay | undefined) {
+  if (!day || !day.hasLoggedMeals) {
+    return "No meal snapshot is available for this day yet. Logging even one meal can make the next weekly view more useful.";
+  }
+
+  const calories = Math.round(day.calories);
+  const protein = Math.round(day.proteinGrams);
+  const calorieTarget = Math.round(day.calorieTarget);
+  const difference = Math.abs(calories - calorieTarget);
+
+  if (day.goalMet) {
+    return `${calories} kcal and ${protein}g protein were logged. This day aligned with your saved calorie target.`;
+  }
+
+  return `${calories} kcal and ${protein}g protein were logged. That is ${difference} kcal ${calories > calorieTarget ? "above" : "below"} your saved target; this is a diary observation, not a judgment.`;
+}
+
+function rangeInsightCopy(goalDays: number, loggedDays: number, rangeDuration: number) {
+  if (!loggedDays) return "Log a meal whenever you are ready to begin your nutrition picture.";
+  if (goalDays) return `You reached your calorie target on ${goalDays} of ${rangeDuration} selected days.`;
+  return `${loggedDays} logged day${loggedDays === 1 ? "" : "s"} is a useful starting point for your next rhythm.`;
+}
+
+function loggingRhythmCopy(loggedDays: number, proteinLoggedDays: number, fiberLoggedDays: number, rangeDuration: number) {
+  if (!loggedDays) {
+    return "Log a meal whenever it is useful. Your first saved snapshot will start a new rhythm here.";
+  }
+
+  return `Meals were logged on ${loggedDays} of ${rangeDuration} selected days; protein appeared on ${proteinLoggedDays} and fiber appeared on ${fiberLoggedDays} of those days.`;
+}
+
+function loggingRhythmAccessibilityLabel(loggedDays: number, proteinLoggedDays: number, fiberLoggedDays: number, rangeDuration: number) {
+  return `Logging rhythm. Meals were logged on ${loggedDays} of ${rangeDuration} selected days. Protein was recorded on ${proteinLoggedDays} days. Fiber was recorded on ${fiberLoggedDays} days. This is a diary pattern, not a nutrition grade.`;
+}
+
+function buildWeightRangeInsight(
+  entries: WeightEntry[],
+  startDate: string | undefined,
+  endDate: string | undefined,
+  unitSystem: "us" | "metric",
+  direction: "maintain" | "cut" | "gain"
+) {
+  const periodEntries = entries
+    .filter((entry) => (!startDate || entry.loggedOn >= startDate) && (!endDate || entry.loggedOn <= endDate))
+    .sort((left, right) => left.loggedOn.localeCompare(right.loggedOn));
+
+  if (periodEntries.length < 2) {
+    return {
+      title: "Add two check-ins to reveal your trend.",
+      body: "Weight is optional. When you choose to log it, this view will describe the pattern alongside your selected goal direction.",
+    };
+  }
+
+  const first = periodEntries[0];
+  const last = periodEntries.at(-1);
+  if (!first || !last) {
+    return { title: "Weight trend unavailable", body: "Add another check-in whenever it feels useful." };
+  }
+
+  const divisor = unitSystem === "us" ? 453.59237 : 1000;
+  const unit = unitSystem === "us" ? "lb" : "kg";
+  const delta = (last.weightGrams - first.weightGrams) / divisor;
+  const threshold = unitSystem === "us" ? 0.5 : 0.2;
+  const magnitude = Math.round(Math.abs(delta) * 10) / 10;
+  const trend = Math.abs(delta) <= threshold ? "steady" : delta > 0 ? "up" : "down";
+  const goalLabel = direction === "cut" ? "a cut" : direction === "gain" ? "a gain" : "maintenance";
+
+  if (trend === "steady") {
+    return {
+      title: `Weight looks steady across ${periodEntries.length} check-ins.`,
+      body: `That is a useful pattern to observe alongside your ${goalLabel} direction. Day-to-day variation is normal.`,
+    };
+  }
+
+  return {
+    title: `Weight is ${trend} ${magnitude} ${unit} across ${periodEntries.length} check-ins.`,
+    body: `This is an observational trend for your ${goalLabel} direction, not a judgment or medical recommendation.`,
+  };
+}
+
 const styles = StyleSheet.create({
   header: {
     gap: spacing.xs,
   },
+  progressHero: { borderRadius: radii.hero },
   eyebrow: {
     ...typography.eyebrow,
     color: colors.muted,
@@ -306,6 +627,20 @@ const styles = StyleSheet.create({
     ...typography.body,
     color: colors.muted,
   },
+  rangeControls: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: spacing.xs, paddingTop: spacing.xs },
+  rangeChip: { minHeight: 44, justifyContent: "center", borderRadius: radii.pill, paddingHorizontal: spacing.sm, backgroundColor: colors.surface, borderWidth: StyleSheet.hairlineWidth },
+  rangeChipSelected: { backgroundColor: colors.insight },
+  rangeChipText: { ...typography.caption, color: colors.ink },
+  rangeChipTextSelected: { color: colors.white },
+  customRangeRow: { flexDirection: "row", alignItems: "center", gap: spacing.xs },
+  dateInput: { width: 124, minHeight: 44, borderRadius: radii.md, paddingHorizontal: spacing.sm, backgroundColor: colors.background, color: colors.ink, textAlign: "center", borderWidth: StyleSheet.hairlineWidth },
+  rangeHint: { ...typography.caption, flex: 1, color: colors.muted },
+  insightCard: { gap: spacing.xs },
+  focusCard: { gap: spacing.sm },
+  focusHeader: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: spacing.sm },
+  focusCopy: { flex: 1, minWidth: 0, gap: spacing.xs },
+  insightEyebrow: { ...typography.eyebrow, color: colors.insight },
+  insightTitle: { ...typography.heading, color: colors.ink },
   legendRow: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -327,37 +662,21 @@ const styles = StyleSheet.create({
   },
   metricRow: {
     flexDirection: "row",
-    gap: spacing.sm,
-  },
-  dayList: {
-    gap: spacing.sm,
-  },
-  dayRow: {
-    minHeight: 64,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
     gap: spacing.md,
-    borderRadius: radii.md,
-    padding: spacing.md,
-    backgroundColor: colors.background,
   },
-  dayCopy: {
-    flex: 1,
-    gap: 2,
+  monthMetricRow: {
+    marginBottom: spacing.md,
   },
-  dayLabel: {
-    ...typography.heading,
-    color: colors.ink,
-  },
-  dayMeta: {
-    ...typography.caption,
-    color: colors.muted,
-  },
+  monthHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: spacing.md },
+  monthTitleCopy: { flex: 1, minWidth: 0, gap: 2 },
+  monthTitle: { ...typography.heading, color: colors.ink },
+  monthMeta: { ...typography.caption, color: colors.muted },
+  monthControls: { flexDirection: "row", gap: spacing.xs },
   monthGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: spacing.sm,
+    columnGap: spacing.md,
+    rowGap: spacing.sm,
   },
   monthDay: {
     width: 34,

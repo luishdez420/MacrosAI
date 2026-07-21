@@ -1,8 +1,17 @@
 from datetime import datetime
+from enum import Enum
 
 from pydantic import Field
 
 from app.schemas.common import ApiModel, ConfidenceBreakdown, NutrientsPer100g
+
+
+class MealType(str, Enum):
+    breakfast = "breakfast"
+    lunch = "lunch"
+    dinner = "dinner"
+    snack = "snack"
+    meal = "meal"
 
 
 class MealItemCreate(ApiModel):
@@ -32,13 +41,33 @@ class MealItemCreate(ApiModel):
 
 class MealCreate(ApiModel):
     name: str = Field(min_length=1)
+    meal_type: MealType = MealType.meal
     logged_at: datetime | None = None
     notes: str | None = None
     items: list[MealItemCreate] = Field(min_length=1)
+    # Scan images remain temporary unless the person explicitly opts in while
+    # confirming this meal. The job ID is never used as a public image key.
+    analysis_job_id: str | None = Field(default=None, min_length=1, max_length=36)
+    retain_analysis_images: bool = False
+
+
+class MealImageRead(ApiModel):
+    id: str
+    capture_angle: str | None = None
+    content_type: str
+    retention_deadline: datetime | None = None
+    created_at: datetime
+
+
+class MealImageAccessRead(ApiModel):
+    url: str
+    expires_in_seconds: int
 
 
 class MealUpdate(ApiModel):
     name: str | None = Field(default=None, min_length=1)
+    meal_type: MealType | None = None
+    logged_at: datetime | None = None
     notes: str | None = None
     items: list[MealItemCreate] | None = None
 
@@ -52,9 +81,11 @@ class MealItemRead(MealItemCreate):
 class MealRead(ApiModel):
     id: str
     name: str
+    meal_type: MealType = MealType.meal
     logged_at: datetime
     notes: str | None = None
     items: list[MealItemRead]
+    images: list[MealImageRead] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 

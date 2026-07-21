@@ -132,6 +132,15 @@ def _quality_flags(item: dict, nutrients: NutrientsPer100g) -> list[str]:
     if not item.get("description"):
         flags.append("missing_name")
 
+    required_numbers = {"203", "205", "204"}
+    nutrient_numbers = {
+        str((nutrient.get("nutrient") or {}).get("number") or nutrient.get("nutrientNumber") or "")
+        for nutrient in item.get("foodNutrients", [])
+    }
+    has_energy = bool(nutrient_numbers.intersection({"1008", "208"}))
+    if not has_energy or not required_numbers.issubset(nutrient_numbers):
+        flags.append("incomplete_per_100g")
+
     if not energy_is_consistent(nutrients):
         flags.append("energy_macro_mismatch")
 

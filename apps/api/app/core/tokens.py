@@ -4,8 +4,9 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
+import jwt
 from fastapi import HTTPException, status
-from jose import JWTError, jwt
+from jwt.exceptions import PyJWTError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -15,6 +16,11 @@ from app.models.user import AuthSession, User
 JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_TYPE = "access"
 REFRESH_TOKEN_PREFIX = "lnr1"
+SUPPORTED_DEVICE_LABELS = {
+    "living nutrition on ios": "Living Nutrition on iOS",
+    "living nutrition on android": "Living Nutrition on Android",
+    "living nutrition on web": "Living Nutrition on web",
+}
 
 
 @dataclass(frozen=True)
@@ -30,22 +36,37 @@ class AccessTokenClaims:
     session_id: str
 
 
-def issue_auth_tokens(user: User, db: Session) -> AuthTokenPair:
+def issue_auth_tokens(
+    user: User,
+    db: Session,
+    *,
+    commit: bool = True,
+    device_label: str | None = None,
+) -> AuthTokenPair:
     refresh_token = _new_refresh_token()
     now = utc_now()
     auth_session = AuthSession(
         id=str(uuid4()),
         user_id=user.id,
         refresh_token_hash=hash_refresh_token(refresh_token),
+        device_label=normalize_device_label(device_label),
         expires_at=now + timedelta(days=settings.jwt_refresh_token_days),
     )
     db.add(auth_session)
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
 
     return _build_token_pair(user.id, auth_session.id, refresh_token, now=now)
 
 
-def rotate_refresh_token(refresh_token: str, db: Session) -> tuple[User, AuthTokenPair]:
+def rotate_refresh_token(
+    refresh_token: str,
+    db: Session,
+    *,
+    device_label: str | None = None,
+) -> tuple[User, AuthTokenPair]:
     auth_session = get_valid_refresh_session(refresh_token, db)
     user = db.get(User, auth_session.user_id)
 
@@ -59,6 +80,8 @@ def rotate_refresh_token(refresh_token: str, db: Session) -> tuple[User, AuthTok
         id=str(uuid4()),
         user_id=user.id,
         refresh_token_hash=hash_refresh_token(new_refresh_token),
+        device_label=normalize_device_label(device_label)
+        or normalize_device_label(auth_session.device_label),
         expires_at=utc_now() + timedelta(days=settings.jwt_refresh_token_days),
     )
     db.add(new_session)
@@ -106,6 +129,24 @@ def revoke_auth_session(session_id: str, user_id: str, db: Session) -> bool:
     return True
 
 
+def revoke_all_auth_sessions(user_id: str, db: Session) -> int:
+    """Invalidate every refresh session before issuing replacement credentials."""
+
+    now = utc_now()
+    sessions = db.scalars(
+        select(AuthSession).where(
+            AuthSession.user_id == user_id,
+            AuthSession.revoked_at.is_(None),
+        )
+    ).all()
+
+    for auth_session in sessions:
+        auth_session.revoked_at = now
+        auth_session.last_used_at = now
+
+    return len(sessions)
+
+
 def decode_access_token(token: str) -> AccessTokenClaims:
     try:
         payload = jwt.decode(
@@ -115,7 +156,7 @@ def decode_access_token(token: str) -> AccessTokenClaims:
             issuer=settings.jwt_issuer,
             audience=settings.jwt_audience,
         )
-    except JWTError as exc:
+    except PyJWTError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired access token.",
@@ -168,6 +209,19 @@ def get_valid_refresh_session(refresh_token: str, db: Session) -> AuthSession:
 
 def hash_refresh_token(refresh_token: str) -> str:
     return hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()
+
+
+def normalize_device_label(value: str | None) -> str | None:
+    """Allow only app-owned labels; never persist raw client identifiers."""
+
+    if not value:
+        return None
+
+    normalized = " ".join(value.split())
+    if not normalized:
+        return None
+
+    return SUPPORTED_DEVICE_LABELS.get(normalized.casefold())
 
 
 def utc_now() -> datetime:

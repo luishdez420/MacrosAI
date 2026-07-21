@@ -5,15 +5,30 @@
     "scheme": "livingnutrition",
     "version": "0.1.0",
     "orientation": "portrait",
-    "userInterfaceStyle": "light",
+    "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "plugins": [
       "expo-router",
       "expo-secure-store",
+      "expo-notifications",
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#F2F5EE",
+          "image": "./assets/living-nutrition-splash.png",
+          "imageWidth": 180,
+          "dark": {
+            "backgroundColor": "#131914",
+            "image": "./assets/living-nutrition-splash.png"
+          }
+        }
+      ],
       [
         "expo-camera",
         {
-          "cameraPermission": "Living Nutrition uses the camera to help you log meals and scan barcodes after your confirmation."
+          "cameraPermission": "Living Nutrition uses the camera to help you log meals and scan barcodes after your confirmation.",
+          "microphonePermission": false,
+          "recordAudioAndroid": false
         }
       ],
       [
@@ -29,15 +44,15 @@
     },
     "android": {
       "package": "com.livingnutrition.app",
+      "blockedPermissions": [
+        "android.permission.RECORD_AUDIO"
+      ],
       "permissions": [
         "CAMERA"
       ]
     },
     "extra": {
-      "apiBaseUrl": "http://localhost:8000/api/v1",
-      "eas": {
-        "projectId": "replace-with-eas-project-id"
-      }
+      "apiBaseUrl": "http://localhost:8000/api/v1"
     }
   }
 }

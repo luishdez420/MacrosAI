@@ -1,0 +1,299 @@
+# Render Blueprint for the selected production topology:
+# Render web/worker services + Render Postgres/Key Value + Cloudflare R2.
+# Secrets use `sync: false` and must be supplied in the Render Dashboard.
+
+envVarGroups:
+  - name: living-nutrition-production-policy
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: IDENTITY_PROVIDER
+        value: clerk
+      - key: ALLOW_DEV_AUTH
+        value: "false"
+      - key: ALLOW_LEGACY_LOCAL_TOKENS
+        value: "false"
+      - key: E2E_FIXTURE_MODE
+        value: "false"
+      - key: RATE_LIMIT_ENABLED
+        value: "true"
+      - key: RATE_LIMIT_BACKEND
+        value: redis
+      - key: NUTRITION_PROVIDER_CIRCUIT_BREAKER_BACKEND
+        value: redis
+      - key: METRICS_ENABLED
+        value: "true"
+      - key: SENTRY_TRACES_SAMPLE_RATE
+        value: "0"
+      - key: AUDIT_DELIVERY_BACKEND
+        value: webhook
+      - key: IMAGE_STORAGE_BACKEND
+        value: s3
+      - key: IMAGE_STORAGE_S3_COMPATIBILITY
+        value: cloudflare_r2
+      - key: IMAGE_STORAGE_S3_REGION
+        value: auto
+      - key: IMAGE_STORAGE_S3_PREFIX
+        value: living-nutrition
+
+services:
+  - type: web
+    name: living-nutrition-api
+    runtime: docker
+    region: oregon
+    plan: starter
+    dockerContext: ./apps/api
+    dockerfilePath: ./apps/api/Dockerfile
+    dockerCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    preDeployCommand: alembic upgrade head
+    healthCheckPath: /health
+    autoDeployTrigger: checksPass
+    maxShutdownDelaySeconds: 120
+    buildFilter:
+      paths:
+        - apps/api/**
+        - render.yaml
+    envVars:
+      - fromGroup: living-nutrition-production-policy
+      - key: DATABASE_URL
+        fromDatabase:
+          name: living-nutrition-postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: living-nutrition-redis
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: USDA_API_KEY
+        sync: false
+      - key: CLERK_JWKS_URL
+        sync: false
+      - key: CLERK_ISSUER
+        sync: false
+      - key: CLERK_AUDIENCE
+        sync: false
+      - key: ADMIN_CLERK_SUBJECTS
+        sync: false
+      # Render does not publish a static proxy CIDR contract in this Blueprint.
+      # Set only the direct trusted ingress ranges after deployment validation.
+      - key: TRUSTED_PROXY_CIDRS
+        sync: false
+      - key: METRICS_BEARER_TOKEN
+        generateValue: true
+      - key: SENTRY_DSN
+        sync: false
+      - key: AUDIT_LOG_RETENTION_DAYS
+        sync: false
+      - key: AUDIT_DELIVERY_WEBHOOK_URL
+        sync: false
+      - key: AUDIT_DELIVERY_HMAC_SECRET
+        sync: false
+      # Use a bucket-scoped Object Read & Write R2 token. Do not put values in Git.
+      - key: IMAGE_STORAGE_S3_BUCKET
+        sync: false
+      - key: IMAGE_STORAGE_S3_ENDPOINT_URL
+        sync: false
+      - key: IMAGE_STORAGE_S3_ACCESS_KEY_ID
+        sync: false
+      - key: IMAGE_STORAGE_S3_SECRET_ACCESS_KEY
+        sync: false
+
+  - type: worker
+    name: living-nutrition-analysis-worker
+    runtime: docker
+    region: oregon
+    plan: starter
+    dockerContext: ./apps/api
+    dockerfilePath: ./apps/api/Dockerfile
+    dockerCommand: sh -c "alembic upgrade head && exec python -m app.workers.meal_analysis"
+    autoDeployTrigger: checksPass
+    maxShutdownDelaySeconds: 300
+    buildFilter:
+      paths:
+        - apps/api/**
+        - render.yaml
+    envVars:
+      - fromGroup: living-nutrition-production-policy
+      - key: DATABASE_URL
+        fromDatabase:
+          name: living-nutrition-postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: living-nutrition-redis
+          property: connectionString
+      - key: JWT_SECRET
+        fromService: { type: web, name: living-nutrition-api, envVarKey: JWT_SECRET }
+      - key: OPENAI_API_KEY
+        fromService: { type: web, name: living-nutrition-api, envVarKey: OPENAI_API_KEY }
+      - key: USDA_API_KEY
+        fromService: { type: web, name: living-nutrition-api, envVarKey: USDA_API_KEY }
+      - key: CLERK_JWKS_URL
+        fromService: { type: web, name: living-nutrition-api, envVarKey: CLERK_JWKS_URL }
+      - key: CLERK_ISSUER
+        fromService: { type: web, name: living-nutrition-api, envVarKey: CLERK_ISSUER }
+      - key: CLERK_AUDIENCE
+        fromService: { type: web, name: living-nutrition-api, envVarKey: CLERK_AUDIENCE }
+      - key: ADMIN_CLERK_SUBJECTS
+        fromService: { type: web, name: living-nutrition-api, envVarKey: ADMIN_CLERK_SUBJECTS }
+      - key: TRUSTED_PROXY_CIDRS
+        fromService: { type: web, name: living-nutrition-api, envVarKey: TRUSTED_PROXY_CIDRS }
+      - key: METRICS_BEARER_TOKEN
+        fromService: { type: web, name: living-nutrition-api, envVarKey: METRICS_BEARER_TOKEN }
+      - key: SENTRY_DSN
+        fromService: { type: web, name: living-nutrition-api, envVarKey: SENTRY_DSN }
+      - key: AUDIT_LOG_RETENTION_DAYS
+        fromService: { type: web, name: living-nutrition-api, envVarKey: AUDIT_LOG_RETENTION_DAYS }
+      - key: AUDIT_DELIVERY_WEBHOOK_URL
+        fromService: { type: web, name: living-nutrition-api, envVarKey: AUDIT_DELIVERY_WEBHOOK_URL }
+      - key: AUDIT_DELIVERY_HMAC_SECRET
+        fromService: { type: web, name: living-nutrition-api, envVarKey: AUDIT_DELIVERY_HMAC_SECRET }
+      - key: IMAGE_STORAGE_S3_BUCKET
+        fromService: { type: web, name: living-nutrition-api, envVarKey: IMAGE_STORAGE_S3_BUCKET }
+      - key: IMAGE_STORAGE_S3_ENDPOINT_URL
+        fromService: { type: web, name: living-nutrition-api, envVarKey: IMAGE_STORAGE_S3_ENDPOINT_URL }
+      - key: IMAGE_STORAGE_S3_ACCESS_KEY_ID
+        fromService: { type: web, name: living-nutrition-api, envVarKey: IMAGE_STORAGE_S3_ACCESS_KEY_ID }
+      - key: IMAGE_STORAGE_S3_SECRET_ACCESS_KEY
+        fromService: { type: web, name: living-nutrition-api, envVarKey: IMAGE_STORAGE_S3_SECRET_ACCESS_KEY }
+
+  - type: worker
+    name: living-nutrition-retention-worker
+    runtime: docker
+    region: oregon
+    plan: starter
+    dockerContext: ./apps/api
+    dockerfilePath: ./apps/api/Dockerfile
+    dockerCommand: sh -c "alembic upgrade head && exec python -m app.workers.image_retention"
+    autoDeployTrigger: checksPass
+    maxShutdownDelaySeconds: 300
+    buildFilter:
+      paths:
+        - apps/api/**
+        - render.yaml
+    envVars:
+      - fromGroup: living-nutrition-production-policy
+      - key: DATABASE_URL
+        fromDatabase:
+          name: living-nutrition-postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: living-nutrition-redis
+          property: connectionString
+      - key: JWT_SECRET
+        fromService: { type: web, name: living-nutrition-api, envVarKey: JWT_SECRET }
+      - key: OPENAI_API_KEY
+        fromService: { type: web, name: living-nutrition-api, envVarKey: OPENAI_API_KEY }
+      - key: USDA_API_KEY
+        fromService: { type: web, name: living-nutrition-api, envVarKey: USDA_API_KEY }
+      - key: CLERK_JWKS_URL
+        fromService: { type: web, name: living-nutrition-api, envVarKey: CLERK_JWKS_URL }
+      - key: CLERK_ISSUER
+        fromService: { type: web, name: living-nutrition-api, envVarKey: CLERK_ISSUER }
+      - key: CLERK_AUDIENCE
+        fromService: { type: web, name: living-nutrition-api, envVarKey: CLERK_AUDIENCE }
+      - key: ADMIN_CLERK_SUBJECTS
+        fromService: { type: web, name: living-nutrition-api, envVarKey: ADMIN_CLERK_SUBJECTS }
+      - key: TRUSTED_PROXY_CIDRS
+        fromService: { type: web, name: living-nutrition-api, envVarKey: TRUSTED_PROXY_CIDRS }
+      - key: METRICS_BEARER_TOKEN
+        fromService: { type: web, name: living-nutrition-api, envVarKey: METRICS_BEARER_TOKEN }
+      - key: SENTRY_DSN
+        fromService: { type: web, name: living-nutrition-api, envVarKey: SENTRY_DSN }
+      - key: AUDIT_LOG_RETENTION_DAYS
+        fromService: { type: web, name: living-nutrition-api, envVarKey: AUDIT_LOG_RETENTION_DAYS }
+      - key: AUDIT_DELIVERY_WEBHOOK_URL
+        fromService: { type: web, name: living-nutrition-api, envVarKey: AUDIT_DELIVERY_WEBHOOK_URL }
+      - key: AUDIT_DELIVERY_HMAC_SECRET
+        fromService: { type: web, name: living-nutrition-api, envVarKey: AUDIT_DELIVERY_HMAC_SECRET }
+      - key: IMAGE_STORAGE_S3_BUCKET
+        fromService: { type: web, name: living-nutrition-api, envVarKey: IMAGE_STORAGE_S3_BUCKET }
+      - key: IMAGE_STORAGE_S3_ENDPOINT_URL
+        fromService: { type: web, name: living-nutrition-api, envVarKey: IMAGE_STORAGE_S3_ENDPOINT_URL }
+      - key: IMAGE_STORAGE_S3_ACCESS_KEY_ID
+        fromService: { type: web, name: living-nutrition-api, envVarKey: IMAGE_STORAGE_S3_ACCESS_KEY_ID }
+      - key: IMAGE_STORAGE_S3_SECRET_ACCESS_KEY
+        fromService: { type: web, name: living-nutrition-api, envVarKey: IMAGE_STORAGE_S3_SECRET_ACCESS_KEY }
+
+  - type: worker
+    name: living-nutrition-food-refresh-worker
+    runtime: docker
+    region: oregon
+    plan: starter
+    dockerContext: ./apps/api
+    dockerfilePath: ./apps/api/Dockerfile
+    dockerCommand: sh -c "alembic upgrade head && exec python -m app.workers.food_source_refresh"
+    autoDeployTrigger: checksPass
+    maxShutdownDelaySeconds: 300
+    buildFilter:
+      paths:
+        - apps/api/**
+        - render.yaml
+    envVars:
+      - fromGroup: living-nutrition-production-policy
+      - key: DATABASE_URL
+        fromDatabase:
+          name: living-nutrition-postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: living-nutrition-redis
+          property: connectionString
+      - key: JWT_SECRET
+        fromService: { type: web, name: living-nutrition-api, envVarKey: JWT_SECRET }
+      - key: OPENAI_API_KEY
+        fromService: { type: web, name: living-nutrition-api, envVarKey: OPENAI_API_KEY }
+      - key: USDA_API_KEY
+        fromService: { type: web, name: living-nutrition-api, envVarKey: USDA_API_KEY }
+      - key: CLERK_JWKS_URL
+        fromService: { type: web, name: living-nutrition-api, envVarKey: CLERK_JWKS_URL }
+      - key: CLERK_ISSUER
+        fromService: { type: web, name: living-nutrition-api, envVarKey: CLERK_ISSUER }
+      - key: CLERK_AUDIENCE
+        fromService: { type: web, name: living-nutrition-api, envVarKey: CLERK_AUDIENCE }
+      - key: ADMIN_CLERK_SUBJECTS
+        fromService: { type: web, name: living-nutrition-api, envVarKey: ADMIN_CLERK_SUBJECTS }
+      - key: TRUSTED_PROXY_CIDRS
+        fromService: { type: web, name: living-nutrition-api, envVarKey: TRUSTED_PROXY_CIDRS }
+      - key: METRICS_BEARER_TOKEN
+        fromService: { type: web, name: living-nutrition-api, envVarKey: METRICS_BEARER_TOKEN }
+      - key: SENTRY_DSN
+        fromService: { type: web, name: living-nutrition-api, envVarKey: SENTRY_DSN }
+      - key: AUDIT_LOG_RETENTION_DAYS
+        fromService: { type: web, name: living-nutrition-api, envVarKey: AUDIT_LOG_RETENTION_DAYS }
+      - key: AUDIT_DELIVERY_WEBHOOK_URL
+        fromService: { type: web, name: living-nutrition-api, envVarKey: AUDIT_DELIVERY_WEBHOOK_URL }
+      - key: AUDIT_DELIVERY_HMAC_SECRET
+        fromService: { type: web, name: living-nutrition-api, envVarKey: AUDIT_DELIVERY_HMAC_SECRET }
+      - key: IMAGE_STORAGE_S3_BUCKET
+        fromService: { type: web, name: living-nutrition-api, envVarKey: IMAGE_STORAGE_S3_BUCKET }
+      - key: IMAGE_STORAGE_S3_ENDPOINT_URL
+        fromService: { type: web, name: living-nutrition-api, envVarKey: IMAGE_STORAGE_S3_ENDPOINT_URL }
+      - key: IMAGE_STORAGE_S3_ACCESS_KEY_ID
+        fromService: { type: web, name: living-nutrition-api, envVarKey: IMAGE_STORAGE_S3_ACCESS_KEY_ID }
+      - key: IMAGE_STORAGE_S3_SECRET_ACCESS_KEY
+        fromService: { type: web, name: living-nutrition-api, envVarKey: IMAGE_STORAGE_S3_SECRET_ACCESS_KEY }
+
+  - type: keyvalue
+    name: living-nutrition-redis
+    region: oregon
+    plan: starter
+    maxmemoryPolicy: noeviction
+    # Render private-network connections continue to work with no public access.
+    ipAllowList: []
+
+databases:
+  - name: living-nutrition-postgres
+    region: oregon
+    plan: basic-1gb
+    databaseName: living_nutrition
+    user: living_nutrition
+    ipAllowList: []

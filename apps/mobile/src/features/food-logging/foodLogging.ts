@@ -72,6 +72,7 @@ export function createMealFromFood({
           servingLabel,
           recordConfidence: food.recordConfidence,
           qualityFlags: food.qualityFlags ?? [],
+          qualityAssessment: food.qualityAssessment,
           sourceReference: food.sourceReference,
           logSource: source,
         },

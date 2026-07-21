@@ -1,0 +1,8 @@
+appId: com.livingnutrition.app
+---
+- launchApp:
+    clearState: true
+- tapOn: "Queue automated test meal"
+- assertVisible: "1 confirmed meal waiting to sync"
+- tapOn: "Sync now"
+- assertVisible: "1 queued meal synced to your diary."

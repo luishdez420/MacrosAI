@@ -1,0 +1,11 @@
+appId: com.livingnutrition.app
+---
+- launchApp:
+    clearState: true
+- tapOn: "Scan a meal with the camera"
+- tapOn: "Use automated test meal"
+- assertVisible: "Fixture grilled chicken meal"
+- tapOn: "Confirm Chicken breast, grilled"
+- tapOn: "Grilled"
+- tapOn: "Log estimate"
+- assertVisible: "Meal saved."

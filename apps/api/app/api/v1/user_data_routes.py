@@ -1,24 +1,35 @@
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from app.api.v1.auth_routes import session_from_user
 from app.api.v1.food_routes import food_result_from_record
 from app.api.v1.goal_routes import goal_to_read
+from app.api.v1.hydration_routes import hydration_entry_to_read
 from app.api.v1.meal_routes import meal_to_read
+from app.api.v1.recipe_routes import recipe_to_read
 from app.api.v1.preference_routes import get_or_create_preferences, preference_to_read
 from app.api.v1.weight_routes import weight_entry_to_read
 from app.core.auth import CurrentUser, ensure_current_user
 from app.core.audit import record_audit_event
 from app.db.session import get_db
-from app.models.analysis import AnalysisJob, AnalysisJobItem, DataCorrectionReport
+from app.models.analysis import AnalysisJob, AnalysisJobImage, AnalysisJobItem, DataCorrectionReport
 from app.models.food import CustomFood, FoodSourceRecord
 from app.models.meal import Meal, MealImage, MealItem
-from app.models.user import AuditLog, AuthSession, FavoriteFood, NutritionGoal, RecentFood, User, UserPreference, WeightEntry
-from app.schemas.export import UserDataExportRead
-from app.schemas.food import FoodCorrectionReportList, FoodCorrectionReportSummary, ProviderName
+from app.models.recipe import Recipe, RecipeItem
+from app.models.user import AuditLog, AuthSession, FavoriteFood, HydrationEntry, NutritionGoal, RecentFood, User, UserPreference, WeightEntry
+from app.services.image_lifecycle import delete_image
+from app.storage import PrivateImageStorage, build_private_image_storage
+from app.schemas.export import EXPORT_FORMAT_VERSION, UserDataExportRead
+from app.schemas.food import (
+    FoodCorrectionReportList,
+    FoodCorrectionReportStatusHistoryRead,
+    FoodCorrectionReportSummary,
+    ProviderName,
+)
+from app.services.correction_reports import status_events_for_report
 
 router = APIRouter()
 
@@ -59,11 +70,22 @@ def export_current_user_data(
         .where(WeightEntry.user_id == current_user.id)
         .order_by(WeightEntry.logged_on.desc(), WeightEntry.created_at.desc())
     ).all()
+    hydration_entries = db.scalars(
+        select(HydrationEntry)
+        .where(HydrationEntry.user_id == current_user.id)
+        .order_by(HydrationEntry.logged_on.desc(), HydrationEntry.created_at.desc())
+    ).all()
     meals = db.scalars(
         select(Meal)
         .where(Meal.user_id == current_user.id)
         .options(selectinload(Meal.items))
         .order_by(Meal.logged_at.desc(), Meal.created_at.desc())
+    ).all()
+    recipes = db.scalars(
+        select(Recipe)
+        .where(Recipe.user_id == current_user.id)
+        .options(selectinload(Recipe.items))
+        .order_by(Recipe.updated_at.desc(), Recipe.created_at.desc())
     ).all()
     favorite_records = db.scalars(
         select(FoodSourceRecord)
@@ -85,12 +107,15 @@ def export_current_user_data(
     ).all()
 
     export = UserDataExportRead(
+        format_version=EXPORT_FORMAT_VERSION,
         generated_at=datetime.now(UTC),
         user=session_from_user(user, db, auth_scheme=current_user.auth_scheme, include_tokens=False),
         preferences=preference_to_read(preferences),
         goals=[goal_to_read(goal) for goal in goals],
         weight_entries=[weight_entry_to_read(entry) for entry in weight_entries],
+        hydration_entries=[hydration_entry_to_read(entry) for entry in hydration_entries],
         meals=[meal_to_read(meal) for meal in meals],
+        recipes=[recipe_to_read(recipe) for recipe in recipes],
         favorite_foods=[food_result_from_record(record) for record in favorite_records],
         recent_foods=[food_result_from_record(record) for record in recent_records],
         custom_foods=[food_result_from_record(record) for record in custom_records],
@@ -105,9 +130,13 @@ def delete_current_user_account(
     request: Request,
     db: Session = Depends(get_db),
     current_user: CurrentUser = Depends(ensure_current_user),
+    storage: PrivateImageStorage = Depends(build_private_image_storage),
 ) -> None:
     meal_ids = list(
         db.scalars(select(Meal.id).where(Meal.user_id == current_user.id)).all()
+    )
+    recipe_ids = list(
+        db.scalars(select(Recipe.id).where(Recipe.user_id == current_user.id)).all()
     )
     analysis_job_ids = list(
         db.scalars(select(AnalysisJob.id).where(AnalysisJob.user_id == current_user.id)).all()
@@ -117,6 +146,36 @@ def delete_current_user_account(
             select(CustomFood.food_source_record_id).where(CustomFood.user_id == current_user.id)
         ).all()
     )
+    stored_meal_images = db.scalars(
+        select(MealImage)
+        .join(Meal, Meal.id == MealImage.meal_id)
+        .where(Meal.user_id == current_user.id, MealImage.deleted_at.is_(None))
+    ).all()
+    stored_analysis_images = db.scalars(
+        select(AnalysisJobImage)
+        .join(AnalysisJob, AnalysisJob.id == AnalysisJobImage.analysis_job_id)
+        .where(AnalysisJob.user_id == current_user.id, AnalysisJobImage.deleted_at.is_(None))
+    ).all()
+    stored_images = [*stored_meal_images, *stored_analysis_images]
+    if stored_images:
+        # Attempt every private object before failing the account deletion. A
+        # failed object keeps durable retry state, while later objects still
+        # receive their own cleanup attempt instead of being stranded.
+        cleanup_outcomes = [delete_image(storage, image) for image in stored_images]
+        if not all(cleanup_outcomes):
+            record_audit_event(
+                db,
+                event_type="user_data.account_delete",
+                user_id=current_user.id,
+                request=request,
+                outcome="cleanup_failed",
+            )
+            db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Private image cleanup is not complete. Please retry account deletion.",
+            )
+
     record_audit_event(db, event_type="user_data.account_delete", user_id=current_user.id, request=request)
 
     if meal_ids:
@@ -125,7 +184,12 @@ def delete_current_user_account(
         db.execute(delete(MealItem).where(MealItem.meal_id.in_(meal_ids)))
         db.execute(delete(Meal).where(Meal.id.in_(meal_ids)))
 
+    if recipe_ids:
+        db.execute(delete(RecipeItem).where(RecipeItem.recipe_id.in_(recipe_ids)))
+        db.execute(delete(Recipe).where(Recipe.id.in_(recipe_ids)))
+
     if analysis_job_ids:
+        db.execute(delete(AnalysisJobImage).where(AnalysisJobImage.analysis_job_id.in_(analysis_job_ids)))
         db.execute(delete(AnalysisJobItem).where(AnalysisJobItem.analysis_job_id.in_(analysis_job_ids)))
         db.execute(delete(AnalysisJob).where(AnalysisJob.id.in_(analysis_job_ids)))
 
@@ -140,6 +204,7 @@ def delete_current_user_account(
         )
 
     db.execute(delete(WeightEntry).where(WeightEntry.user_id == current_user.id))
+    db.execute(delete(HydrationEntry).where(HydrationEntry.user_id == current_user.id))
     db.execute(delete(NutritionGoal).where(NutritionGoal.user_id == current_user.id))
     db.execute(delete(UserPreference).where(UserPreference.user_id == current_user.id))
     db.execute(delete(AuthSession).where(AuthSession.user_id == current_user.id))
@@ -165,7 +230,18 @@ def correction_report_summary(
         report_type=report.report_type,
         message=report.message,
         status=report.status,
+        resolution_summary=report.resolution_summary,
         created_at=report.created_at,
+        updated_at=report.updated_at,
+        resolved_at=report.resolved_at,
+        status_history=[
+            FoodCorrectionReportStatusHistoryRead(
+                status=event.status,
+                summary=event.user_visible_summary,
+                created_at=event.created_at,
+            )
+            for event in status_events_for_report(db, report.id)
+        ],
         source_display_name=source_record.display_name if source_record else None,
         source_provider=source_provider,
         source_external_id=source_record.external_id if source_record else None,

@@ -1,0 +1,11 @@
+appId: com.livingnutrition.app
+---
+- launchApp:
+    clearState: true
+- tapOn: "Build a multi-food meal"
+- tapOn: "Search foods to add to the meal"
+- inputText: "banana"
+- assertVisible: "Banana, raw"
+- tapOn: "Add Banana, raw to meal"
+- tapOn: "Save meal"
+- assertVisible: "Meal saved."

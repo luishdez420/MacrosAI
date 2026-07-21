@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 
 import type { FoodDetail } from "@living-nutrition/shared-types";
-import { colors, spacing, typography } from "@living-nutrition/design-tokens";
+import { colors, spacing, typography, type ThemePalette } from "@living-nutrition/design-tokens";
 import { api } from "../../services/api";
 import {
   ActionButton,
@@ -15,12 +15,16 @@ import {
   SourceBadge,
   StatusPill,
 } from "../../shared/components/LivingUI";
+import { useTheme } from "../../shared/theme/ThemeProvider";
 import {
   NutrientTable,
   OriginalNutrientIdsPanel,
   ProvenancePanel,
+  QualityAssessmentPanel,
   QualityFlagList,
   ServingBasisCard,
+  SourceConflictPanel,
+  SourceHistoryPanel,
 } from "./FoodDetailPanels";
 import {
   confidenceDisplay,
@@ -40,6 +44,8 @@ type CorrectionType = (typeof correctionTypes)[number]["value"];
 export function FoodDetailScreen() {
   const router = useRouter();
   const queryClient = useQueryClient();
+  const { palette } = useTheme();
+  const themed = foodDetailThemeStyles(palette);
   const [favoriteNotice, setFavoriteNotice] = useState<string | null>(null);
   const [correctionType, setCorrectionType] = useState<CorrectionType>("wrong_nutrients");
   const [correctionMessage, setCorrectionMessage] = useState("");
@@ -169,14 +175,14 @@ export function FoodDetailScreen() {
     <ScreenShell>
       <View style={styles.headerRow}>
         <View style={styles.headerCopy}>
-          <Text style={styles.eyebrow}>Nutrition source</Text>
-          <Text style={styles.title}>{detail ? readableFoodName(detail.displayName) : "Loading source"}</Text>
-          <Text style={styles.body}>
+          <Text style={[styles.eyebrow, themed.muted]}>Nutrition source</Text>
+          <Text style={[styles.title, themed.ink]}>{detail ? readableFoodName(detail.displayName) : "Loading source"}</Text>
+          <Text style={[styles.body, themed.muted]}>
             Inspect the source record, serving basis, and quality checks before logging or editing.
           </Text>
         </View>
         <Pressable accessibilityRole="button" style={styles.textButton} onPress={() => router.back()}>
-          <Text style={styles.textButtonLabel}>Close</Text>
+          <Text style={[styles.textButtonLabel, themed.actionText]}>Close</Text>
         </Pressable>
       </View>
 
@@ -241,6 +247,9 @@ export function FoodDetailScreen() {
           />
           <OverviewCard food={detail} />
           <ProvenancePanel food={detail} />
+          <SourceHistoryPanel history={detail.retrievalHistory ?? []} />
+          <SourceConflictPanel conflicts={detail.sourceConflicts} />
+          <QualityAssessmentPanel assessment={detail.qualityAssessment} />
           <QualityFlagList flags={detail.qualityFlags ?? []} />
           <ServingBasisCard servingOptions={detail.servingOptions} />
           <NutrientTable nutrients={detail.nutrientsPer100g} />
@@ -253,14 +262,16 @@ export function FoodDetailScreen() {
 
 function OverviewCard({ food }: { food: FoodDetail }) {
   const confidence = confidenceDisplay(food.recordConfidence);
-  const hasWarnings = Boolean(food.qualityFlags?.length);
+  const hasWarnings = Boolean(food.qualityFlags?.length) || food.qualityAssessment?.status === "needs_review";
+  const { palette } = useTheme();
+  const themed = foodDetailThemeStyles(palette);
 
   return (
     <Card tone={hasWarnings || food.recordConfidence === "low" ? "soft" : "surface"}>
       <View style={styles.overviewTop}>
         <View style={styles.headerCopy}>
-          <Text style={styles.cardEyebrow}>Food record</Text>
-          <Text style={styles.cardTitle}>{readableFoodName(food.displayName)}</Text>
+          <Text style={[styles.cardEyebrow, themed.muted]}>Food record</Text>
+          <Text style={[styles.cardTitle, themed.ink]}>{readableFoodName(food.displayName)}</Text>
         </View>
         <StatusPill label={confidence.label} tone={confidence.tone === "danger" ? "danger" : confidence.tone} />
       </View>
@@ -268,10 +279,12 @@ function OverviewCard({ food }: { food: FoodDetail }) {
         <SourceBadge label={providerDisplayName(food.provider)} tone="success" />
         <SourceBadge label={food.dataType} tone={hasWarnings ? "warning" : "neutral"} />
       </View>
-      <Text style={styles.body}>
-        {hasWarnings || food.recordConfidence === "low"
-          ? "Needs review before logging. Use the provider data as a starting point, not a guarantee."
-          : "Ready for portion-based logging after you confirm the amount eaten."}
+      <Text style={[styles.body, themed.muted]}>
+        {food.qualityAssessment?.isBlocking
+          ? "This record cannot be logged because essential per-100g data is incomplete or invalid. Choose another record."
+          : hasWarnings || food.recordConfidence === "low"
+            ? "Needs review before logging. Use the provider data as a starting point, not a guarantee."
+            : "Ready for portion-based logging after you confirm the amount eaten."}
       </Text>
     </Card>
   );
@@ -296,11 +309,13 @@ function CorrectionReportCard({
   onChangeMessage: (value: string) => void;
   onSubmit: () => void;
 }) {
+  const { palette } = useTheme();
+  const themed = foodDetailThemeStyles(palette);
   return (
     <Card tone="soft">
-      <Text style={styles.cardEyebrow}>Correction report</Text>
-      <Text style={styles.cardTitle}>Something look wrong?</Text>
-      <Text style={styles.body}>
+      <Text style={[styles.cardEyebrow, themed.muted]}>Correction report</Text>
+      <Text style={[styles.cardTitle, themed.ink]}>Something look wrong?</Text>
+      <Text style={[styles.body, themed.muted]}>
         Report source-data issues without changing your saved meals. This helps flag records that
         may need review before future logging.
       </Text>
@@ -322,13 +337,13 @@ function CorrectionReportCard({
             <Pressable
               key={type.value}
               accessibilityRole="button"
-              style={[styles.correctionTypeButton, active ? styles.activeCorrectionType : undefined]}
+              style={[styles.correctionTypeButton, themed.subsurface, active ? styles.activeCorrectionType : undefined]}
               onPress={() => onSelectType(type.value)}
             >
               <Text
                 style={[
                   styles.correctionTypeText,
-                  active ? styles.activeCorrectionTypeText : undefined,
+                  { color: active ? palette.onPrimary : palette.ink },
                 ]}
               >
                 {type.label}
@@ -339,10 +354,11 @@ function CorrectionReportCard({
       </View>
 
       <TextInput
-        style={styles.correctionInput}
+        style={[styles.correctionInput, themed.input]}
         value={message}
         onChangeText={onChangeMessage}
         placeholder="Example: calories look too high for 100g, or this barcode matched the wrong flavor."
+        placeholderTextColor={palette.muted}
         multiline
         textAlignVertical="top"
       />
@@ -357,11 +373,13 @@ function CorrectionReportCard({
 }
 
 function LoadingSourceCard() {
+  const { palette } = useTheme();
+  const themed = foodDetailThemeStyles(palette);
   return (
     <Card>
-      <Text style={styles.cardEyebrow}>Loading</Text>
-      <Text style={styles.cardTitle}>Checking nutrition source...</Text>
-      <Text style={styles.body}>
+      <Text style={[styles.cardEyebrow, themed.muted]}>Loading</Text>
+      <Text style={[styles.cardTitle, themed.ink]}>Checking nutrition source...</Text>
+      <Text style={[styles.body, themed.muted]}>
         Fetching provider metadata, serving options, quality flags, and per-100g values.
       </Text>
     </Card>
@@ -369,11 +387,13 @@ function LoadingSourceCard() {
 }
 
 function LoadingSnapshotCard() {
+  const { palette } = useTheme();
+  const themed = foodDetailThemeStyles(palette);
   return (
     <Card>
-      <Text style={styles.cardEyebrow}>Fallback</Text>
-      <Text style={styles.cardTitle}>Checking saved meal snapshot...</Text>
-      <Text style={styles.body}>
+      <Text style={[styles.cardEyebrow, themed.muted]}>Fallback</Text>
+      <Text style={[styles.cardTitle, themed.ink]}>Checking saved meal snapshot...</Text>
+      <Text style={[styles.body, themed.muted]}>
         The live source lookup failed. Looking for the nutrition source snapshot saved with this meal.
       </Text>
     </Card>
@@ -382,6 +402,20 @@ function LoadingSnapshotCard() {
 
 function stringParam(value: string | string[] | undefined) {
   return Array.isArray(value) ? value[0] : value;
+}
+
+function foodDetailThemeStyles(palette: ThemePalette) {
+  return {
+    ink: { color: palette.ink },
+    muted: { color: palette.muted },
+    actionText: { color: palette.actionText },
+    subsurface: { backgroundColor: palette.surfaceAlt },
+    input: {
+      backgroundColor: palette.controlSurface,
+      borderColor: palette.border,
+      color: palette.ink,
+    },
+  };
 }
 
 const styles = StyleSheet.create({

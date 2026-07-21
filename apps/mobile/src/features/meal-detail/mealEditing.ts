@@ -1,10 +1,22 @@
-import type { MealItemCreate, MealItemRead, NutrientPer100g } from "@living-nutrition/shared-types";
+import type {
+  FoodSearchResult,
+  MealItemCreate,
+  MealItemRead,
+  NutrientPer100g,
+} from "@living-nutrition/shared-types";
+import { calculateConsumedNutrients } from "@living-nutrition/validation";
 
 type SnapshotShape = {
   nutrientsPer100g?: Partial<NutrientPer100g>;
   consumedNutrients?: Partial<NutrientPer100g>;
   consumedGrams?: number;
   confirmedGrams?: number;
+};
+
+export type PortionNutrientDisplayRow = {
+  label: string;
+  value: string;
+  accessibilityLabel: string;
 };
 
 export function buildEditedMealItem(item: MealItemRead, consumedGrams: number): MealItemCreate {
@@ -45,6 +57,122 @@ export function buildEditedMealItem(item: MealItemRead, consumedGrams: number): 
     preparationMethod: item.preparationMethod,
     addedOilGrams: item.addedOilGrams,
     notes: item.notes,
+  };
+}
+
+/** Replaces a saved item with a user-selected provider record while retaining the original snapshot for auditability. */
+export function buildReplacementMealItem(
+  item: MealItemRead,
+  replacement: FoodSearchResult,
+  consumedGrams: number
+): MealItemCreate {
+  const nutrients = calculateConsumedNutrients(replacement.nutrientsPer100g, consumedGrams);
+
+  return {
+    foodId: replacement.id,
+    displayName: replacement.displayName,
+    consumedGrams,
+    servingQuantity: consumedGrams,
+    servingUnit: "grams",
+    calories: nutrients.caloriesKcal,
+    proteinGrams: nutrients.proteinGrams,
+    carbohydrateGrams: nutrients.carbohydrateGrams,
+    fatGrams: nutrients.fatGrams,
+    fiberGrams: nutrients.fiberGrams,
+    sugarGrams: nutrients.sugarGrams,
+    sodiumMilligrams: nutrients.sodiumMilligrams,
+    sourceProvider: replacement.provider,
+    sourceExternalId: replacement.externalId,
+    sourceVersion: replacement.dataType,
+    sourceReference: replacement.sourceReference,
+    nutrientSnapshotJson: {
+      nutrientsPer100g: replacement.nutrientsPer100g,
+      consumedNutrients: nutrients,
+      consumedGrams,
+      servingLabel: `${roundNumber(consumedGrams)}g replacement`,
+      replacement: {
+        previousFoodId: item.foodId,
+        previousDisplayName: item.displayName,
+        previousSourceProvider: item.sourceProvider,
+        previousSourceExternalId: item.sourceExternalId,
+        selectedAt: new Date().toISOString(),
+      },
+    },
+    confidence: {
+      identity: "high",
+      portion: "verified",
+      nutritionRecord: replacement.recordConfidence,
+      explanation:
+        "This provider record was selected to replace the previously logged food. Nutrition was recalculated from the grams entered.",
+    },
+    userConfirmed: true,
+    preparationMethod: item.preparationMethod,
+    addedOilGrams: item.addedOilGrams,
+    notes: item.notes,
+  };
+}
+
+/** Creates a confirmed saved-meal item from a provider record selected during meal editing. */
+export function buildAddedMealItem(
+  food: FoodSearchResult,
+  consumedGrams: number
+): MealItemCreate {
+  const nutrients = calculateConsumedNutrients(food.nutrientsPer100g, consumedGrams);
+
+  return {
+    foodId: food.id,
+    displayName: food.displayName,
+    consumedGrams,
+    servingQuantity: consumedGrams,
+    servingUnit: "grams",
+    calories: nutrients.caloriesKcal,
+    proteinGrams: nutrients.proteinGrams,
+    carbohydrateGrams: nutrients.carbohydrateGrams,
+    fatGrams: nutrients.fatGrams,
+    fiberGrams: nutrients.fiberGrams,
+    sugarGrams: nutrients.sugarGrams,
+    sodiumMilligrams: nutrients.sodiumMilligrams,
+    sourceProvider: food.provider,
+    sourceExternalId: food.externalId,
+    sourceVersion: food.dataType,
+    sourceReference: food.sourceReference,
+    nutrientSnapshotJson: {
+      nutrientsPer100g: food.nutrientsPer100g,
+      consumedNutrients: nutrients,
+      consumedGrams,
+      servingLabel: `${roundNumber(consumedGrams)}g added during meal edit`,
+      originalNutrientIds: food.originalNutrientIds,
+      qualityFlags: food.qualityFlags,
+      addedDuringMealEditAt: new Date().toISOString(),
+    },
+    confidence: {
+      identity: "high",
+      portion: "verified",
+      nutritionRecord: food.recordConfidence,
+      explanation:
+        "This provider record was added to the saved meal and recalculated from the grams entered.",
+    },
+    userConfirmed: true,
+    preparationMethod: null,
+    addedOilGrams: 0,
+    notes: null,
+  };
+}
+
+/** Supplies a local editor row before a newly selected provider record is persisted. */
+export function buildAddedMealDraft(
+  food: FoodSearchResult,
+  id: string,
+  consumedGrams = 100
+): MealItemRead {
+  const item = buildAddedMealItem(food, consumedGrams);
+  const now = new Date().toISOString();
+
+  return {
+    ...item,
+    id,
+    createdAt: now,
+    updatedAt: now,
   };
 }
 
@@ -97,13 +225,28 @@ export function scaleNutrients(nutrientsPer100g: NutrientPer100g, consumedGrams:
   };
 }
 
-export function parsePositiveNumber(value: string) {
-  const parsed = Number(value.replace(",", "."));
+export function parsePositiveNumber(value: string | null | undefined) {
+  const parsed = Number(value?.replace(",", ".") ?? "");
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
 }
 
 export function roundNumber(value: number) {
   return Math.round(value * 10) / 10;
+}
+
+/** Formats saved snapshot nutrients for the grams currently shown in the meal editor. */
+export function formatPortionNutrientRows(
+  nutrients: NutrientPer100g
+): PortionNutrientDisplayRow[] {
+  return [
+    portionNutrientRow("Calories", nutrients.caloriesKcal, "kcal"),
+    portionNutrientRow("Protein", nutrients.proteinGrams, "g"),
+    portionNutrientRow("Carbohydrates", nutrients.carbohydrateGrams, "g"),
+    portionNutrientRow("Fat", nutrients.fatGrams, "g"),
+    optionalPortionNutrientRow("Fiber", nutrients.fiberGrams, "g"),
+    optionalPortionNutrientRow("Sugar", nutrients.sugarGrams, "g"),
+    optionalPortionNutrientRow("Sodium", nutrients.sodiumMilligrams, "mg"),
+  ].filter((row): row is PortionNutrientDisplayRow => Boolean(row));
 }
 
 function normalizeNutrients(value: Partial<NutrientPer100g>): NutrientPer100g {
@@ -120,4 +263,27 @@ function normalizeNutrients(value: Partial<NutrientPer100g>): NutrientPer100g {
 
 function scaleOptional(value: number | undefined, scale: number) {
   return value === undefined ? undefined : value * scale;
+}
+
+function portionNutrientRow(
+  label: string,
+  value: number,
+  unit: "g" | "mg" | "kcal"
+): PortionNutrientDisplayRow {
+  const roundedValue = unit === "kcal" || unit === "mg" ? Math.round(value) : roundNumber(value);
+  const display = `${roundedValue} ${unit}`;
+
+  return {
+    label,
+    value: display,
+    accessibilityLabel: `${label}: ${display}, based on the portion entered`,
+  };
+}
+
+function optionalPortionNutrientRow(
+  label: string,
+  value: number | undefined,
+  unit: "g" | "mg"
+) {
+  return value === undefined ? undefined : portionNutrientRow(label, value, unit);
 }

@@ -1,0 +1,11 @@
+appId: com.livingnutrition.app
+---
+- launchApp:
+    clearState: true
+- tapOn: "Search verified food records"
+- tapOn: "Search foods by name"
+- inputText: "fixture rate limit"
+- assertVisible: "Nutrition search is temporarily unavailable"
+- assertVisible: "Too many requests were sent. Wait a moment, then try again."
+- tapOn: "Try search again"
+- assertVisible: "Nutrition search is temporarily unavailable"

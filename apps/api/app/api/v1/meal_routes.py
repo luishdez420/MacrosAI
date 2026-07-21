@@ -1,15 +1,41 @@
 from datetime import UTC, date, datetime, time, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy import Select, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.auth import CurrentUser, ensure_current_user
+from app.core.authorization import raise_owner_scoped_not_found
+from app.core.config import settings
+from app.core.idempotency import (
+    MEAL_CREATE_OPERATION,
+    complete_idempotency_key,
+    get_completed_replay,
+    reserve_idempotency_key,
+    resolve_idempotency_key,
+)
 from app.db.session import get_db
+from app.models.analysis import AnalysisJob
 from app.models.food import FoodSourceRecord
 from app.models.meal import Meal, MealItem
-from app.models.user import RecentFood
-from app.schemas.meal import MealCreate, MealItemCreate, MealItemRead, MealRead, MealUpdate
+from app.models.user import RecentFood, UserPreference
+from app.schemas.meal import (
+    MealCreate,
+    MealImageAccessRead,
+    MealImageRead,
+    MealItemCreate,
+    MealItemRead,
+    MealRead,
+    MealUpdate,
+)
+from app.services.image_lifecycle import (
+    copy_review_images_to_meal,
+    delete_analysis_job_images,
+    delete_image,
+    get_owned_meal_image_or_none,
+)
+from app.storage import PrivateImageStorage, build_private_image_storage
 
 router = APIRouter()
 
@@ -17,12 +43,50 @@ router = APIRouter()
 @router.post("", response_model=MealRead, status_code=status.HTTP_201_CREATED)
 def create_meal(
     meal: MealCreate,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: CurrentUser = Depends(ensure_current_user),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    storage: PrivateImageStorage = Depends(build_private_image_storage),
 ) -> MealRead:
+    normalized_idempotency_key = resolve_idempotency_key(idempotency_key)
+    request_payload = meal.model_dump(mode="json")
+    completed_replay = get_completed_replay(
+        db,
+        user_id=current_user.id,
+        operation=MEAL_CREATE_OPERATION,
+        idempotency_key=normalized_idempotency_key,
+        request_payload=request_payload,
+    )
+    if completed_replay:
+        return MealRead.model_validate(completed_replay)
+
+    # Validate a referenced review job before reserving an idempotency record
+    # or flushing a new meal. Owner-denial auditing commits independently, so
+    # doing it after either write could accidentally persist a rejected meal.
+    analysis_job = get_confirmable_analysis_job_or_404(
+        db,
+        meal=meal,
+        current_user=current_user,
+        request=request,
+    )
+    reservation = reserve_idempotency_key(
+        db,
+        user_id=current_user.id,
+        operation=MEAL_CREATE_OPERATION,
+        idempotency_key=normalized_idempotency_key,
+        request_payload=request_payload,
+        commit=False,
+    )
+
+    if reservation and reservation.is_replay:
+        return MealRead.model_validate(reservation.replay_body)
+
     persisted_meal = Meal(
         user_id=current_user.id,
         name=meal.name,
+        idempotency_key=normalized_idempotency_key,
+        meal_type=meal.meal_type.value,
         logged_at=meal.logged_at or datetime.now(UTC),
         notes=meal.notes,
     )
@@ -31,9 +95,50 @@ def create_meal(
     upsert_recent_foods(db, current_user.id, meal.items)
 
     db.add(persisted_meal)
-    db.commit()
+    try:
+        db.flush()
+        persist_confirmed_analysis_images(
+            db,
+            storage=storage,
+            current_user=current_user,
+            meal=persisted_meal,
+            meal_request=meal,
+            analysis_job=analysis_job,
+        )
+        response = meal_to_read(get_meal_or_404(db, persisted_meal.id, current_user.id))
+        complete_idempotency_key(
+            db,
+            reservation,
+            response,
+            response_status=status.HTTP_201_CREATED,
+            resource_type="meal",
+            resource_id=persisted_meal.id,
+            commit=False,
+        )
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        replay = get_completed_replay(
+            db,
+            user_id=current_user.id,
+            operation=MEAL_CREATE_OPERATION,
+            idempotency_key=normalized_idempotency_key,
+            request_payload=request_payload,
+        )
+        if replay:
+            return MealRead.model_validate(replay)
+        raise
+    except HTTPException:
+        db.rollback()
+        raise
+    except (OSError, ValueError) as error:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="The meal was not saved because its private photo could not be stored. Try again without keeping the photo.",
+        ) from error
 
-    return meal_to_read(get_meal_or_404(db, persisted_meal.id, current_user.id))
+    return response
 
 
 @router.get("", response_model=list[MealRead])
@@ -55,24 +160,32 @@ def list_meals(
 @router.get("/{meal_id}", response_model=MealRead)
 def get_meal(
     meal_id: str,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: CurrentUser = Depends(ensure_current_user),
 ) -> MealRead:
-    return meal_to_read(get_meal_or_404(db, meal_id, current_user.id))
+    return meal_to_read(get_meal_or_404(db, meal_id, current_user.id, request=request))
 
 
 @router.patch("/{meal_id}", response_model=MealRead)
 def update_meal(
     meal_id: str,
     meal_update: MealUpdate,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: CurrentUser = Depends(ensure_current_user),
 ) -> MealRead:
-    meal = get_meal_or_404(db, meal_id, current_user.id)
+    meal = get_meal_or_404(db, meal_id, current_user.id, request=request)
     update_data = meal_update.model_dump(exclude_unset=True)
 
     if "name" in update_data and update_data["name"] is not None:
         meal.name = update_data["name"]
+
+    if "meal_type" in update_data and update_data["meal_type"] is not None:
+        meal.meal_type = update_data["meal_type"].value
+
+    if "logged_at" in update_data and update_data["logged_at"] is not None:
+        meal.logged_at = update_data["logged_at"]
 
     if "notes" in update_data:
         meal.notes = update_data["notes"]
@@ -83,32 +196,111 @@ def update_meal(
         upsert_recent_foods(db, current_user.id, meal_update.items)
 
     db.commit()
-    return meal_to_read(get_meal_or_404(db, meal_id, current_user.id))
+    return meal_to_read(get_meal_or_404(db, meal_id, current_user.id, request=request))
 
 
 @router.delete("/{meal_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_meal(
     meal_id: str,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: CurrentUser = Depends(ensure_current_user),
+    storage: PrivateImageStorage = Depends(build_private_image_storage),
 ) -> None:
-    meal = get_meal_or_404(db, meal_id, current_user.id)
+    meal = get_meal_or_404(db, meal_id, current_user.id, request=request)
+    if not all(delete_image(storage, image) for image in meal.images if image.deleted_at is None):
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="The meal photo could not be deleted yet. We will retry securely before removing this meal.",
+        )
     db.delete(meal)
+    db.commit()
+
+
+@router.get("/{meal_id}/images/{image_id}/access", response_model=MealImageAccessRead)
+def get_meal_image_access(
+    meal_id: str,
+    image_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(ensure_current_user),
+    storage: PrivateImageStorage = Depends(build_private_image_storage),
+) -> MealImageAccessRead:
+    get_meal_or_404(db, meal_id, current_user.id, request=request)
+    image = get_owned_meal_image_or_none(db, user_id=current_user.id, image_id=image_id)
+    if not image or image.meal_id != meal_id:
+        raise_owner_scoped_not_found(
+            db,
+            request=request,
+            user_id=current_user.id,
+            detail="Meal image not found.",
+        )
+    try:
+        url = storage.signed_read_url(
+            image.storage_key,
+            expires_in_seconds=settings.image_signed_url_seconds,
+        )
+    except Exception as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Private meal-photo access is unavailable in this environment.",
+        ) from error
+    return MealImageAccessRead(url=url, expires_in_seconds=settings.image_signed_url_seconds)
+
+
+@router.delete("/{meal_id}/images/{image_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_meal_image(
+    meal_id: str,
+    image_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(ensure_current_user),
+    storage: PrivateImageStorage = Depends(build_private_image_storage),
+) -> None:
+    get_meal_or_404(db, meal_id, current_user.id, request=request)
+    image = get_owned_meal_image_or_none(db, user_id=current_user.id, image_id=image_id)
+    if not image or image.meal_id != meal_id:
+        raise_owner_scoped_not_found(
+            db,
+            request=request,
+            user_id=current_user.id,
+            detail="Meal image not found.",
+        )
+    if not delete_image(storage, image):
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="The photo could not be deleted yet. We will retry securely.",
+        )
     db.commit()
 
 
 def meal_query(user_id: str) -> Select[tuple[Meal]]:
     return (
         select(Meal)
-        .options(selectinload(Meal.items))
+        .options(selectinload(Meal.items), selectinload(Meal.images))
         .where(Meal.user_id == user_id)
     )
 
 
-def get_meal_or_404(db: Session, meal_id: str, user_id: str) -> Meal:
+def get_meal_or_404(
+    db: Session,
+    meal_id: str,
+    user_id: str,
+    *,
+    request: Request | None = None,
+) -> Meal:
     meal = db.scalar(meal_query(user_id).where(Meal.id == meal_id))
 
     if not meal:
+        if request:
+            raise_owner_scoped_not_found(
+                db,
+                request=request,
+                user_id=user_id,
+                detail="Meal not found.",
+            )
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Meal not found.")
 
     return meal
@@ -118,8 +310,20 @@ def meal_to_read(meal: Meal) -> MealRead:
     return MealRead(
         id=meal.id,
         name=meal.name,
+        meal_type=meal.meal_type,
         logged_at=meal.logged_at,
         notes=meal.notes,
+        images=[
+            MealImageRead(
+                id=image.id,
+                capture_angle=image.capture_angle,
+                content_type=image.content_type,
+                retention_deadline=image.retention_deadline,
+                created_at=image.created_at,
+            )
+            for image in meal.images
+            if image.deleted_at is None
+        ],
         created_at=meal.created_at,
         updated_at=meal.updated_at,
         items=[
@@ -160,12 +364,95 @@ def meal_to_read(meal: Meal) -> MealRead:
     )
 
 
+def persist_confirmed_analysis_images(
+    db: Session,
+    *,
+    storage: PrivateImageStorage,
+    current_user: CurrentUser,
+    meal: Meal,
+    meal_request: MealCreate,
+    analysis_job: AnalysisJob | None,
+) -> None:
+    """Honor an explicit per-meal photo choice while retaining no scan by default."""
+
+    if not meal_request.analysis_job_id:
+        if meal_request.retain_analysis_images:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="A completed camera analysis is required to keep a scan photo with a meal.",
+            )
+        return
+
+    if not analysis_job:
+        # This is unreachable after the preflight in create_meal. Retain a
+        # defensive failure rather than allowing a scan reference to proceed.
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Meal analysis was not found.")
+
+    if meal_request.retain_analysis_images:
+        preferences = db.scalar(select(UserPreference).where(UserPreference.user_id == current_user.id))
+        retention_days = preferences.image_retention_days if preferences else settings.image_retention_days
+        if retention_days <= 0:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Your photo-retention preference is set to delete immediately. Change it before keeping a meal photo.",
+            )
+        copy_review_images_to_meal(
+            db,
+            storage=storage,
+            analysis_job=analysis_job,
+            meal=meal,
+            retention_deadline=datetime.now(UTC) + timedelta(days=retention_days),
+        )
+
+    # Whether or not a copy was requested, the temporary review inputs are no
+    # longer needed once the user explicitly confirms this meal.
+    delete_analysis_job_images(db, storage=storage, analysis_job_id=analysis_job.id)
+
+
+def get_confirmable_analysis_job_or_404(
+    db: Session,
+    *,
+    meal: MealCreate,
+    current_user: CurrentUser,
+    request: Request,
+) -> AnalysisJob | None:
+    """Resolve a review job before a meal transaction can write anything.
+
+    The lookup is deliberately owner-scoped. A missing, expired, cancelled, or
+    other-account job follows the same non-enumerating 404 policy as direct
+    analysis-job reads and cancellations.
+    """
+
+    if not meal.analysis_job_id:
+        return None
+
+    job = db.scalar(
+        select(AnalysisJob).where(
+            AnalysisJob.id == meal.analysis_job_id,
+            AnalysisJob.user_id == current_user.id,
+            AnalysisJob.status == "needs_review",
+            AnalysisJob.expires_at.is_not(None),
+            AnalysisJob.expires_at > datetime.now(UTC),
+        )
+    )
+    if job:
+        return job
+
+    raise_owner_scoped_not_found(
+        db,
+        request=request,
+        user_id=current_user.id,
+        detail="Meal analysis was not found.",
+    )
+
+
 def append_meal_items(meal: Meal, items: list[MealItemCreate]) -> None:
-    for item in items:
+    for sort_order, item in enumerate(items):
         meal.items.append(
             MealItem(
                 food_id=item.food_id,
                 display_name=item.display_name,
+                sort_order=sort_order,
                 consumed_grams=item.consumed_grams,
                 serving_quantity=item.serving_quantity,
                 serving_unit=item.serving_unit,

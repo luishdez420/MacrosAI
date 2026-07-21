@@ -1,8 +1,10 @@
 from app.nutrition.providers.open_food_facts import (
+    _confidence_for_product,
     _has_serving_conflict,
     _quality_flags,
     _serving_basis,
 )
+from app.schemas.common import ConfidenceTier
 from app.schemas.common import NutrientsPer100g
 
 
@@ -69,3 +71,70 @@ def test_open_food_facts_quality_flags_negative_raw_values() -> None:
     )
 
     assert "negative_nutrient" in _quality_flags(product, nutrients)
+
+
+def test_open_food_facts_flags_invalid_core_per_100g_values() -> None:
+    product = {
+        "product_name": "Malformed community product",
+        "nutriments": {
+            "energy-kcal_100g": "not available",
+            "proteins_100g": "4",
+            "carbohydrates_100g": "18",
+            "fat_100g": "2",
+        },
+    }
+    nutrients = NutrientsPer100g(
+        calories_kcal=0,
+        protein_grams=4,
+        carbohydrate_grams=18,
+        fat_grams=2,
+    )
+
+    flags = _quality_flags(product, nutrients)
+
+    assert "invalid_per_100g_value" in flags
+    assert _confidence_for_product(flags) == ConfidenceTier.low
+
+
+def test_open_food_facts_flags_non_finite_core_per_100g_values() -> None:
+    product = {
+        "product_name": "Non-finite community product",
+        "nutriments": {
+            "energy-kcal_100g": "NaN",
+            "proteins_100g": "4",
+            "carbohydrates_100g": "18",
+            "fat_100g": "2",
+        },
+    }
+    nutrients = NutrientsPer100g(
+        calories_kcal=0,
+        protein_grams=4,
+        carbohydrate_grams=18,
+        fat_grams=2,
+    )
+
+    assert "invalid_per_100g_value" in _quality_flags(product, nutrients)
+
+
+def test_open_food_facts_marks_unverified_serving_without_downgrading_per_100g_record() -> None:
+    product = {
+        "product_name": "Serving without gram basis",
+        "serving_size": "1 bar",
+        "nutriments": {
+            "energy-kcal_100g": "400",
+            "proteins_100g": "10",
+            "carbohydrates_100g": "60",
+            "fat_100g": "12",
+        },
+    }
+    nutrients = NutrientsPer100g(
+        calories_kcal=400,
+        protein_grams=10,
+        carbohydrate_grams=60,
+        fat_grams=12,
+    )
+
+    flags = _quality_flags(product, nutrients)
+
+    assert "unverified_serving_basis" in flags
+    assert _confidence_for_product(flags) == ConfidenceTier.medium

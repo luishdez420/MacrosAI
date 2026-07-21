@@ -1,0 +1,24 @@
+appId: com.livingnutrition.app
+---
+- launchApp:
+    clearState: true
+- tapOn: "Search verified food records"
+- tapOn: "Search foods by name"
+- inputText: "banana"
+- tapOn: "Select Banana, raw nutrition record"
+- tapOn: "Log meal"
+- assertVisible: "Meal saved."
+- tapOn: "View Today"
+- tapOn: "Edit portions"
+- tapOn: "Actual grams eaten for Banana, raw"
+- eraseText
+- inputText: "150"
+- tapOn: "Save adjusted meal"
+- assertVisible: "Meal updated."
+- tapOn: "View Today"
+- tapOn: "Edit portions"
+- tapOn: "Delete meal"
+- tapOn:
+    text: "Delete meal"
+    index: 1
+- assertVisible: "Meal deleted."

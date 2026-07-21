@@ -132,6 +132,7 @@ describe("profile weight presentation", () => {
   it("summarizes user data export counts", () => {
     expect(
       buildUserDataExportSummary({
+        formatVersion: "living-nutrition-export/v1",
         generatedAt: "2026-07-08T12:00:00Z",
         user: {
           id: "user_1",
@@ -146,18 +147,25 @@ describe("profile weight presentation", () => {
           unitSystem: "us",
           dayStartTime: "00:00",
           timezone: "UTC",
+          goalDirection: "maintain",
+    onboardingGoal: null,
+    loggingPreference: null,
+    dietaryPreferences: [],
+    themePreference: "system",
           imageRetentionDays: 30,
           createdAt: "2026-07-08T12:00:00Z",
           updatedAt: "2026-07-08T12:00:00Z",
         },
         goals: [],
         weightEntries: [weightEntry("entry_1", "2026-07-01", 80000)],
+        hydrationEntries: [],
         meals: [],
+        recipes: [],
         favoriteFoods: [food("food_1", "Banana")],
         recentFoods: [food("food_2", "Rice")],
         customFoods: [],
       })
-    ).toBe("0 meals\n1 weight entries\n0 goals\n1 favorites\n1 recent foods\n0 custom foods");
+    ).toBe("0 meals\n1 weight entries\n0 hydration entries\n0 goals\n0 recipes\n1 favorites\n1 recent foods\n0 custom foods");
   });
 
   it("normalizes image retention preference input", () => {

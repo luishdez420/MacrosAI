@@ -1,33 +1,64 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import * as Sentry from "@sentry/react-native";
 import { Stack } from "expo-router";
 import { StatusBar } from "expo-status-bar";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { View, StyleSheet } from "react-native";
 
-import { colors } from "@living-nutrition/design-tokens";
 import { FloatingTabs } from "../src/shared/components/FloatingTabs";
+import { PrimaryTabSwipeNavigator } from "../src/shared/components/PrimaryTabSwipeNavigator";
+import { ScrollNavigationProvider } from "../src/shared/components/ScrollNavigationContext";
+import { ThemeProvider, useTheme } from "../src/shared/theme/ThemeProvider";
+import { configureNotificationPresentation } from "../src/services/hydrationReminder";
+import { ManagedAuthProvider } from "../src/features/auth/ClerkAuthGate";
+import { env } from "../src/config/env";
+import { configureMobileErrorReporting } from "../src/services/errorReporting";
 
-export default function RootLayout() {
+configureMobileErrorReporting();
+
+function RootLayout() {
   const [queryClient] = useState(() => new QueryClient());
 
   return (
     <QueryClientProvider client={queryClient}>
       <SafeAreaProvider>
-        <View style={styles.root}>
-          <StatusBar style="dark" />
+        <ThemeProvider>
+          <ManagedAuthProvider>
+            <ThemedRoot />
+          </ManagedAuthProvider>
+        </ThemeProvider>
+      </SafeAreaProvider>
+    </QueryClientProvider>
+  );
+}
+
+export default env.sentryDsn ? Sentry.wrap(RootLayout) : RootLayout;
+
+function ThemedRoot() {
+  const { palette } = useTheme();
+
+  useEffect(() => {
+    configureNotificationPresentation();
+  }, []);
+
+  return (
+    <View style={[styles.root, { backgroundColor: palette.background }]}>
+      <StatusBar style={palette.statusBar} />
+      <ScrollNavigationProvider>
+        <PrimaryTabSwipeNavigator>
           <Stack
             screenOptions={{
               headerShown: false,
               contentStyle: {
-                backgroundColor: colors.background,
+                backgroundColor: palette.background,
               },
             }}
           />
-          <FloatingTabs />
-        </View>
-      </SafeAreaProvider>
-    </QueryClientProvider>
+        </PrimaryTabSwipeNavigator>
+        <FloatingTabs />
+      </ScrollNavigationProvider>
+    </View>
   );
 }
 

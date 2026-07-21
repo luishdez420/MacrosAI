@@ -34,6 +34,14 @@ describe("food detail presentation helpers", () => {
       label: "Serving does not match per-100g data",
       tone: "warning",
     });
+    expect(qualityFlagDisplay("invalid_per_100g_value")).toMatchObject({
+      label: "Invalid per-100g value",
+      tone: "danger",
+    });
+    expect(qualityFlagDisplay("unverified_serving_basis")).toMatchObject({
+      label: "Serving has no verified gram weight",
+      tone: "warning",
+    });
     expect(qualityFlagDisplay("stale_source_record")).toMatchObject({
       label: "Source record may be stale",
       tone: "warning",

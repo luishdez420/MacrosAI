@@ -17,15 +17,21 @@
     "dev:phone": "node scripts/dev-phone.js",
     "dev:phone:clear": "node scripts/dev-phone.js --clear",
     "dev:phone:tunnel": "node scripts/dev-phone.js --tunnel",
+    "dev:device": "node scripts/dev-phone.js --dev-client",
+    "dev:device:clear": "node scripts/dev-phone.js --dev-client --clear",
     "ports": "sh -c 'lsof -nP -iTCP:8000 -iTCP:8081 -sTCP:LISTEN || true'",
     "api": "cd apps/api && AUTO_MIGRATE_ON_STARTUP=true uvicorn app.main:app --host 0.0.0.0 --port 8000",
     "api:reload": "cd apps/api && AUTO_MIGRATE_ON_STARTUP=true uvicorn app.main:app --reload --host 0.0.0.0 --port 8000",
+    "api:analysis-worker": "cd apps/api && python -m app.workers.meal_analysis",
+    "api:food-source-refresh-worker": "cd apps/api && python -m app.workers.food_source_refresh",
     "api:test": "cd apps/api && pytest",
     "typecheck": "npm run mobile:typecheck"
   },
   "dependencies": {
     "expo": "54.0.35",
+    "expo-file-system": "19.0.23",
     "expo-router": "6.0.24",
+    "expo-sharing": "~14.0.8",
     "react": "19.1.0",
     "react-dom": "19.1.0"
   },

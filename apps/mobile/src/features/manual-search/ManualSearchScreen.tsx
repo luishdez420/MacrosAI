@@ -1,4 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Ionicons } from "@expo/vector-icons";
+import * as Haptics from "expo-haptics";
 import { Link, useRouter } from "expo-router";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -16,20 +18,26 @@ import {
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
-import type { FoodSearchResult, MealCreate } from "@living-nutrition/shared-types";
-import { colors, radii, spacing, typography } from "@living-nutrition/design-tokens";
+import type { FoodSearchResult, MealCreate, MealType, RecipeRead } from "@living-nutrition/shared-types";
+import { colors, radii, spacing, typography, type ThemePalette } from "@living-nutrition/design-tokens";
 import { calculateConsumedNutrients, roundNutrientsForDisplay } from "@living-nutrition/validation";
-import { api } from "../../services/api";
+import { api, getStoredUserId } from "../../services/api";
+import { queueConfirmedMeal } from "../../services/offlineMealQueue";
 import {
   ActionButton,
   Card,
+  GlassSurface,
   InlineNotice,
   MacroStatTile,
   readableFoodName,
   SourceBadge,
   StatusPill,
 } from "../../shared/components/LivingUI";
+import { useTheme } from "../../shared/theme/ThemeProvider";
 import { foodDetailHref } from "../food-detail/foodDetailLinks";
+import { getOnboardingPreferences } from "../onboarding/onboardingStorage";
+import type { LoggingPreference } from "../onboarding/onboardingPreferences";
+import { suggestMealTypeForTime } from "../../shared/domain/mealTiming";
 import {
   createMealFromFood,
   gramsForPortion,
@@ -43,19 +51,33 @@ import {
   servingSummary,
 } from "../food-logging/foodLogging";
 import { stickyLogBottomOffset } from "./manualSearchLayout";
+import {
+  actionIdempotencyKey,
+  createMealActionScope,
+  mealCreateIdempotencyKey,
+} from "../../shared/domain/mealIdempotency";
+import { presentApiError } from "../../shared/domain/apiErrorPresentation";
+import { canQueueConfirmedMeal } from "../../shared/domain/offlineMealSync";
+import { blocksFoodLogging, foodQualityDisplay } from "../../shared/domain/foodQuality";
 
 export function ManualSearchScreen() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const insets = useSafeAreaInsets();
+  const { palette } = useTheme();
+  const themed = manualThemeStyles(palette);
   const scrollRef = useRef<ScrollView>(null);
   const selectedCardY = useRef(0);
   const shouldScrollToSelectedCard = useRef(false);
+  const mealActionScope = useRef(createMealActionScope("manual")).current;
+  const recipeLogScopes = useRef(new Map<string, string>());
   const [keyboardBottomInset, setKeyboardBottomInset] = useState(0);
   const [query, setQuery] = useState("");
   const [selectedFood, setSelectedFood] = useState<FoodSearchResult | undefined>(undefined);
   const [portionMode, setPortionMode] = useState<PortionMode>("grams");
   const [amount, setAmount] = useState("100");
+  const [mealSaved, setMealSaved] = useState(false);
+  const [loggingPreference, setLoggingPreference] = useState<LoggingPreference | undefined>();
   const [formNotice, setFormNotice] = useState<{
     title: string;
     body: string;
@@ -76,6 +98,11 @@ export function ManualSearchScreen() {
     queryFn: () => api.getFavoriteFoods(),
     enabled: query.trim().length < 2,
   });
+  const recipes = useQuery({
+    queryKey: ["recipes", "manual-search-suggestions"],
+    queryFn: () => api.listRecipes(),
+    enabled: query.trim().length < 2,
+  });
   const servingGramWeight = selectedFood ? getServingGramWeight(selectedFood) : undefined;
   const grams = gramsForPortion(portionMode, amount, servingGramWeight);
   const nutrients = selectedFood
@@ -86,19 +113,63 @@ export function ManualSearchScreen() {
   const favoriteItems = favoriteFoods.data?.items ?? [];
   const favoriteIds = new Set(favoriteItems.map((item) => item.id));
   const recentItems = (recentFoods.data?.items ?? []).filter((item) => !favoriteIds.has(item.id));
+  const suggestedMealType = suggestMealTypeForTime(localTimeKey()) ?? "meal";
+  const suggestedRecipes = (recipes.data ?? [])
+    .filter((recipe) => (recipe.mealType ?? "meal") === suggestedMealType)
+    .slice(0, 3);
   const searchItems = foods.data?.items ?? [];
   const loadingSavedFoods = favoriteFoods.isLoading || recentFoods.isLoading;
   const logMutation = useMutation({
-    mutationFn: (meal: MealCreate) => api.createMeal(meal),
+    mutationFn: ({ meal, idempotencyKey }: { meal: MealCreate; idempotencyKey: string }) =>
+      api.createMeal(meal, { idempotencyKey }),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["diary"] });
       await queryClient.invalidateQueries({ queryKey: ["foods", "recent"] });
-      router.replace("/");
+      setMealSaved(true);
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => undefined);
+    },
+    onError: async (error, variables) => {
+      if (canQueueConfirmedMeal(error)) {
+        const ownerId = await getStoredUserId();
+
+        if (ownerId) {
+          try {
+            await queueConfirmedMeal(ownerId, variables.meal, variables.idempotencyKey);
+            await queryClient.invalidateQueries({ queryKey: ["offline-meal-queue"] });
+            setFormNotice({
+              title: "Confirmed meal queued",
+              body: "We could not reach Living Nutrition, so this source-backed meal is saved on this device and will stay in your queue until you sync it from Today.",
+              tone: "warning",
+            });
+            return;
+          } catch {
+            // Keep the original recovery message if device storage is unavailable.
+          }
+        }
+      }
+
+      setFormNotice({
+        title: "Meal was not saved",
+        body: presentApiError(error, "We couldn't save this meal right now. Try again in a moment.").body,
+        tone: "danger",
+      });
+    },
+  });
+  const recipeLogMutation = useMutation({
+    mutationFn: ({ recipeId, idempotencyKey }: { recipeId: string; idempotencyKey: string }) =>
+      api.logRecipe(recipeId, { idempotencyKey }),
+    onSuccess: async (_result, variables) => {
+      recipeLogScopes.current.delete(variables.recipeId);
+      await queryClient.invalidateQueries({ queryKey: ["diary"] });
+      await queryClient.invalidateQueries({ queryKey: ["recipes"] });
+      await queryClient.invalidateQueries({ queryKey: ["foods", "recent"] });
+      setMealSaved(true);
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => undefined);
     },
     onError: (error) => {
       setFormNotice({
-        title: "Meal was not saved",
-        body: error.message,
+        title: "Saved meal was not logged",
+        body: presentApiError(error, "We couldn't log this saved meal right now. Try again in a moment.").body,
         tone: "danger",
       });
     },
@@ -118,13 +189,27 @@ export function ManualSearchScreen() {
     };
   }, []);
 
+  useEffect(() => {
+    let active = true;
+
+    void getOnboardingPreferences().then((preferences) => {
+      if (active) {
+        setLoggingPreference(preferences?.loggingPreference);
+      }
+    });
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
   function selectFood(food: FoodSearchResult) {
     const defaultServing = getServingGramWeight(food);
     shouldScrollToSelectedCard.current = true;
     setSelectedFood(food);
     setFormNotice(null);
 
-    if (defaultServing) {
+    if (defaultServing && loggingPreference !== "kitchen_scale") {
       setPortionMode("servings");
       setAmount("1");
     } else {
@@ -161,9 +246,17 @@ export function ManualSearchScreen() {
       return;
     }
 
+    if (blocksFoodLogging(selectedFood)) {
+      setFormNotice({
+        title: "Choose a complete nutrition record",
+        body: selectedFood.qualityAssessment?.summary ?? "This record is missing essential per-100g nutrition data and cannot be logged.",
+        tone: "danger",
+      });
+      return;
+    }
+
     Keyboard.dismiss();
-    logMutation.mutate(
-      createMealFromFood({
+    const confirmedMeal = createMealFromFood({
         food: selectedFood,
         grams,
         servingLabel: portionLabel(portionMode, amount, servingGramWeight),
@@ -171,8 +264,11 @@ export function ManualSearchScreen() {
         servingQuantity: parsePositiveNumber(amount),
         portionMode,
         source: "manual",
-      })
-    );
+      });
+    logMutation.mutate({
+      meal: confirmedMeal,
+      idempotencyKey: mealCreateIdempotencyKey(mealActionScope, confirmedMeal),
+    });
   }
 
   function changePortionMode(nextMode: PortionMode) {
@@ -186,15 +282,19 @@ export function ManualSearchScreen() {
 
   function renderFoodResult(item: FoodSearchResult) {
     return (
-      <View
+      <Card
         key={item.id}
         style={[
           styles.result,
           selectedFood?.id === item.id ? styles.selectedResult : undefined,
+          selectedFood?.id === item.id ? themed.selectedBorder : undefined,
         ]}
       >
         <Pressable
           accessibilityRole="button"
+          accessibilityLabel={`Select ${readableFoodName(item.displayName)} nutrition record`}
+          accessibilityHint={`${Math.round(item.nutrientsPer100g.caloriesKcal)} calories per 100 grams. Opens portion controls.`}
+          accessibilityState={{ selected: selectedFood?.id === item.id }}
           style={styles.resultSelectArea}
           onPress={() => {
             Keyboard.dismiss();
@@ -202,18 +302,18 @@ export function ManualSearchScreen() {
           }}
         >
           <View style={styles.resultCopy}>
-            <Text numberOfLines={2} style={styles.resultTitle}>
+            <Text numberOfLines={2} style={[styles.resultTitle, themed.ink]}>
               {readableFoodName(item.displayName)}
             </Text>
-            <Text numberOfLines={1} style={styles.resultMeta}>
+            <Text numberOfLines={1} style={[styles.resultMeta, themed.muted]}>
               {Math.round(item.nutrientsPer100g.caloriesKcal)} kcal per 100g - {servingSummary(item)}
             </Text>
           </View>
           <View style={styles.resultBadges}>
             <SourceBadge label={item.provider.replaceAll("_", " ")} />
             <StatusPill
-              label={item.recordConfidence}
-              tone={item.recordConfidence === "low" ? "warning" : "success"}
+              label={foodQualityDisplay(item.qualityAssessment).label}
+              tone={foodQualityDisplay(item.qualityAssessment).tone}
             />
           </View>
         </Pressable>
@@ -221,17 +321,73 @@ export function ManualSearchScreen() {
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={`View nutrition source for ${readableFoodName(item.displayName)}`}
-            style={styles.sourceButton}
+            style={[styles.sourceButton, themed.subsurface]}
           >
-            <Text style={styles.sourceButtonText}>View source</Text>
+            <Text style={[styles.sourceButtonText, themed.actionText]}>View source</Text>
           </Pressable>
         </Link>
-      </View>
+      </Card>
+    );
+  }
+
+  function renderSuggestedRecipe(recipe: RecipeRead) {
+    const totals = recipe.items.reduce(
+      (current, item) => ({
+        calories: current.calories + item.calories,
+        protein: current.protein + item.proteinGrams,
+      }),
+      { calories: 0, protein: 0 }
+    );
+
+    return (
+      <Card key={recipe.id} style={styles.recipeSuggestion}>
+        <View style={styles.recipeSuggestionTop}>
+          <View style={styles.recipeSuggestionCopy}>
+            <Text numberOfLines={2} style={[styles.resultTitle, themed.ink]}>{recipe.name}</Text>
+            <Text style={[styles.resultMeta, themed.muted]}>
+              {Math.round(totals.calories)} kcal · {Math.round(totals.protein)}g protein · {recipe.items.length} food{recipe.items.length === 1 ? "" : "s"}
+            </Text>
+          </View>
+          <StatusPill label="Saved recipe" tone="success" />
+        </View>
+        <View style={styles.recipeSuggestionActions}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`Review saved recipe ${recipe.name}`}
+            onPress={() => router.push(`/meal-builder?recipeId=${encodeURIComponent(recipe.id)}`)}
+            style={[styles.sourceButton, themed.subsurface]}
+          >
+            <Text style={[styles.sourceButtonText, themed.actionText]}>Review</Text>
+          </Pressable>
+          <ActionButton
+            label={recipeLogMutation.isPending ? "Logging…" : "Log saved meal"}
+            onPress={() => {
+              const actionScope = recipeLogScopes.current.get(recipe.id) ?? createMealActionScope("recipe-log");
+              recipeLogScopes.current.set(recipe.id, actionScope);
+              recipeLogMutation.mutate({
+                recipeId: recipe.id,
+                idempotencyKey: actionIdempotencyKey(actionScope, { recipeId: recipe.id }),
+              });
+            }}
+            disabled={recipeLogMutation.isPending}
+            style={styles.recipeLogButton}
+          />
+        </View>
+      </Card>
+    );
+  }
+
+  if (mealSaved) {
+    return (
+      <ManualSearchSavedScreen
+        onViewToday={() => router.replace("/")}
+        onLogAnother={() => router.replace("/manual-search")}
+      />
     );
   }
 
   return (
-    <SafeAreaView style={styles.screen}>
+      <SafeAreaView style={[styles.screen, { backgroundColor: palette.background }]}>
       <KeyboardAvoidingView
         style={styles.keyboardAvoider}
         behavior={Platform.OS === "ios" ? "padding" : "height"}
@@ -245,14 +401,18 @@ export function ManualSearchScreen() {
             keyboardShouldPersistTaps="handled"
           >
             <View style={styles.header}>
-              <Text style={styles.eyebrow}>Manual entry</Text>
-              <Text style={styles.title}>Search, portion, log.</Text>
-              <Text style={styles.body}>
+              <Text style={[styles.eyebrow, themed.muted]}>Manual entry</Text>
+              <Text style={[styles.title, themed.ink]}>Search, portion, log.</Text>
+              <Text style={[styles.body, themed.muted]}>
                 Pick a food record, enter the weight or servings, and we calculate macros from per-100g data.
               </Text>
               <Link href="/saved-foods" asChild>
-                <Pressable accessibilityRole="button" style={styles.manageSavedButton}>
-                  <Text style={styles.manageSavedText}>Manage saved foods</Text>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Manage saved favorite and recent foods"
+                  style={styles.manageSavedButton}
+                >
+                  <Text style={[styles.manageSavedText, themed.actionText]}>Manage saved foods</Text>
                 </Pressable>
               </Link>
             </View>
@@ -262,10 +422,13 @@ export function ManualSearchScreen() {
             ) : null}
 
             <TextInput
-              style={styles.input}
+              accessibilityLabel="Search foods by name"
+              accessibilityHint="Type at least two characters to search nutrition records."
+              style={[styles.input, themed.input]}
               value={query}
               onChangeText={setQuery}
               placeholder="Banana, grilled chicken, brown rice..."
+              placeholderTextColor={palette.muted}
               autoCapitalize="none"
               returnKeyType="search"
               blurOnSubmit
@@ -276,30 +439,40 @@ export function ManualSearchScreen() {
                 <Card>
                 <View style={styles.selectedHeader}>
                   <View style={styles.selectedCopy}>
-                    <Text style={styles.cardEyebrow}>Selected food</Text>
-                    <Text numberOfLines={3} style={styles.selectedTitle}>
+                    <Text style={[styles.cardEyebrow, themed.muted]}>Selected food</Text>
+                    <Text numberOfLines={3} style={[styles.selectedTitle, themed.ink]}>
                       {readableFoodName(selectedFood.displayName)}
                     </Text>
                     <View style={styles.badgeRow}>
                       <SourceBadge label={selectedFood.provider.replaceAll("_", " ")} tone="success" />
                       <StatusPill
-                        label={`${selectedFood.recordConfidence} confidence`}
-                        tone={selectedFood.recordConfidence === "low" ? "warning" : "success"}
+                        label={foodQualityDisplay(selectedFood.qualityAssessment).label}
+                        tone={foodQualityDisplay(selectedFood.qualityAssessment).tone}
                       />
                     </View>
-                    <Text style={styles.resultMeta}>{selectedFood.dataType}</Text>
+                    <Text style={[styles.resultMeta, themed.muted]}>{selectedFood.dataType}</Text>
+                    {blocksFoodLogging(selectedFood) ? (
+                      <Text style={[styles.warningText, themed.warningText]}>
+                        {selectedFood.qualityAssessment?.summary}
+                      </Text>
+                    ) : null}
                   </View>
-                  <Pressable style={styles.changeButton} onPress={() => setSelectedFood(undefined)}>
-                    <Text style={styles.changeButtonText}>Change</Text>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`Choose a different food instead of ${readableFoodName(selectedFood.displayName)}`}
+                    style={styles.changeButton}
+                    onPress={() => setSelectedFood(undefined)}
+                  >
+                    <Text style={[styles.changeButtonText, themed.actionText]}>Change</Text>
                   </Pressable>
                 </View>
                 <Link href={foodDetailHref(selectedFood.id)} asChild>
                   <Pressable
                     accessibilityRole="button"
                     accessibilityLabel={`View nutrition source for ${readableFoodName(selectedFood.displayName)}`}
-                    style={styles.sourceButton}
+                    style={[styles.sourceButton, themed.subsurface]}
                   >
-                    <Text style={styles.sourceButtonText}>View source</Text>
+                    <Text style={[styles.sourceButtonText, themed.actionText]}>View source</Text>
                   </Pressable>
                 </Link>
 
@@ -324,28 +497,31 @@ export function ManualSearchScreen() {
 
                 <View style={styles.amountRow}>
                   <View style={styles.amountInputWrap}>
-                    <Text style={styles.inputLabel}>
+                    <Text style={[styles.inputLabel, themed.muted]}>
                       {portionInputLabel(portionMode)}
                     </Text>
                     <TextInput
-                      style={styles.amountInput}
+                      accessibilityLabel={portionInputLabel(portionMode)}
+                      accessibilityHint="Enter the amount you ate. Nutrition is calculated from the source record per 100 grams."
+                      style={[styles.amountInput, themed.input]}
                       value={amount}
                       onChangeText={setAmount}
                       keyboardType="decimal-pad"
                       placeholder={portionMode === "servings" ? "1" : portionMode === "ounces" ? "3.5" : "100"}
+                      placeholderTextColor={palette.muted}
                       returnKeyType="done"
                       blurOnSubmit
                       onFocus={() => requestAnimationFrame(scrollToSelectedCard)}
                       onSubmitEditing={Keyboard.dismiss}
                     />
                   </View>
-                  <View style={styles.servingHint}>
-                    <Text style={styles.servingHintValue}>{Math.round(grams || 0)}g</Text>
-                    <Text style={styles.servingHintLabel}>used</Text>
+                  <View style={[styles.servingHint, themed.subsurface]}>
+                    <Text style={[styles.servingHintValue, themed.ink]}>{Math.round(grams || 0)}g</Text>
+                    <Text style={[styles.servingHintLabel, themed.muted]}>used</Text>
                   </View>
                 </View>
 
-                <Text style={styles.hintText}>
+                <Text style={[styles.hintText, themed.muted]}>
                   {servingGramWeight
                     ? `1 serving = ${Math.round(servingGramWeight)}g from the source record.`
                     : "Servings are unavailable because this record has no verified gram weight. Use grams or ounces."} {portionMode === "ounces" ? "Ounces are converted to grams before macros are calculated." : ""}
@@ -362,44 +538,64 @@ export function ManualSearchScreen() {
             ) : null}
 
             <View style={styles.resultsList}>
-              {trimmedQuery.length < 2 && (favoriteItems.length || recentItems.length) ? (
+              {trimmedQuery.length >= 2 && foods.error ? (
+                <InlineNotice
+                  title="Nutrition search is temporarily unavailable"
+                  body={presentApiError(
+                    foods.error,
+                    "We couldn't load nutrition records right now. Try again in a moment."
+                  ).body}
+                  tone="warning"
+                  actions={[{ label: "Try search again", onPress: () => void foods.refetch(), variant: "secondary" }]}
+                />
+              ) : null}
+              {trimmedQuery.length < 2 && (favoriteItems.length || recentItems.length || suggestedRecipes.length) ? (
                 <>
+                  {suggestedRecipes.length ? (
+                    <>
+                      <Text style={[styles.resultsHeading, themed.ink]}>Saved for {mealTypeLabel(suggestedMealType)}</Text>
+                      <Text style={[styles.suggestionHint, themed.muted]}>
+                        Your recipes tagged for this time of day. Review or log a saved, source-backed meal.
+                      </Text>
+                      {suggestedRecipes.map(renderSuggestedRecipe)}
+                    </>
+                  ) : null}
                   {favoriteItems.length ? (
                     <>
-                      <Text style={styles.resultsHeading}>Favorite foods</Text>
+                      <Text style={[styles.resultsHeading, themed.ink]}>Favorite foods</Text>
                       {favoriteItems.map(renderFoodResult)}
                     </>
                   ) : null}
                   {recentItems.length ? (
                     <>
-                      <Text style={styles.resultsHeading}>Recent foods</Text>
+                      <Text style={[styles.resultsHeading, themed.ink]}>Recent foods</Text>
                       {recentItems.map(renderFoodResult)}
                     </>
                   ) : null}
                 </>
               ) : trimmedQuery.length >= 2 && searchItems.length ? (
                 <>
-                  <Text style={styles.resultsHeading}>Search results</Text>
+                  <Text style={[styles.resultsHeading, themed.ink]}>Search results</Text>
                   {searchItems.map(renderFoodResult)}
                 </>
-              ) : (
+              ) : !foods.error ? (
                 <View style={styles.emptyState}>
-                  <Text style={styles.empty}>
+                  <Text style={[styles.empty, themed.muted]}>
                     {trimmedQuery.length < 2
                       ? loadingSavedFoods
                         ? "Loading saved foods..."
-                        : "Type at least two letters, or favorite foods to keep them here."
+                        : "Type at least two letters, or save recipes and favorite foods to keep them here."
                       : "No foods found yet."}
                   </Text>
                   {trimmedQuery.length >= 2 ? (
                     <Link href="/custom-food" asChild>
-                      <Pressable accessibilityRole="button" style={styles.sourceButton}>
-                        <Text style={styles.sourceButtonText}>Create custom food</Text>
+                      <Pressable accessibilityRole="button" style={[styles.sourceButton, themed.subsurface]}>
+                        <Text style={[styles.sourceButtonText, themed.actionText]}>Create custom food</Text>
                       </Pressable>
                     </Link>
                   ) : null}
                 </View>
-              )}
+              ) : null}
             </View>
           </ScrollView>
         </TouchableWithoutFeedback>
@@ -417,24 +613,54 @@ export function ManualSearchScreen() {
           ]}
           pointerEvents="box-none"
         >
-          <View style={styles.stickyLogCard}>
+          <GlassSurface level="navigation" style={styles.stickyLogCard} contentStyle={styles.stickyLogContent}>
             <View style={styles.stickyLogCopy}>
-              <Text numberOfLines={1} style={styles.stickyLogTitle}>
+              <Text numberOfLines={1} style={[styles.stickyLogTitle, themed.ink]}>
                 {readableFoodName(selectedFood.displayName)}
               </Text>
-              <Text style={styles.stickyLogMeta}>
+              <Text style={[styles.stickyLogMeta, themed.muted]}>
                 {Math.round(grams || 0)}g · {Math.round(displayNutrients.caloriesKcal)} kcal
               </Text>
             </View>
             <ActionButton
               label={logMutation.isPending ? "Saving..." : "Log meal"}
               onPress={logManualMeal}
-              disabled={logMutation.isPending}
+              disabled={logMutation.isPending || blocksFoodLogging(selectedFood)}
               style={styles.stickyLogButton}
             />
-          </View>
+          </GlassSurface>
         </View>
       ) : null}
+    </SafeAreaView>
+  );
+}
+
+function ManualSearchSavedScreen({
+  onViewToday,
+  onLogAnother,
+}: {
+  onViewToday: () => void;
+  onLogAnother: () => void;
+}) {
+  const { palette } = useTheme();
+  const themed = manualThemeStyles(palette);
+
+  return (
+    <SafeAreaView style={[styles.screen, { backgroundColor: palette.background }]}>
+      <View style={styles.savedState}>
+        <View accessible accessibilityLabel="Meal saved" style={[styles.savedMark, themed.savedMark]}>
+          <Ionicons name="checkmark" size={32} color={colors.white} />
+        </View>
+        <Text style={[styles.eyebrow, themed.muted]}>Saved to your diary</Text>
+        <Text style={[styles.title, themed.ink]}>Meal saved.</Text>
+        <Text style={[styles.body, themed.muted]}>
+          Your diary uses the source record and portion you selected. You can adjust this meal later from Today.
+        </Text>
+        <View style={styles.savedActions}>
+          <ActionButton label="View Today" onPress={onViewToday} />
+          <ActionButton label="Log another food" variant="secondary" onPress={onLogAnother} />
+        </View>
+      </View>
     </SafeAreaView>
   );
 }
@@ -450,20 +676,35 @@ function ModeButton({
   onPress: () => void;
   disabled?: boolean;
 }) {
+  const { palette } = useTheme();
+  const themed = manualThemeStyles(palette);
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={disabled ? `${label} unavailable because no verified gram serving weight` : label}
       accessibilityState={{ disabled, selected: active }}
-      style={[styles.modeButton, active ? styles.activeModeButton : undefined, disabled ? styles.disabledModeButton : undefined]}
+      style={[styles.modeButton, themed.subsurface, active ? styles.activeModeButton : undefined, disabled ? styles.disabledModeButton : undefined]}
       onPress={onPress}
       disabled={disabled}
     >
-      <Text style={[styles.modeButtonText, active ? styles.activeModeButtonText : undefined, disabled ? styles.disabledModeButtonText : undefined]}>
+      <Text style={[styles.modeButtonText, { color: active ? palette.onPrimary : palette.ink }, disabled ? [styles.disabledModeButtonText, { color: palette.muted }] : undefined]}>
         {label}
       </Text>
     </Pressable>
   );
+}
+
+function manualThemeStyles(palette: ThemePalette) {
+  return {
+    ink: { color: palette.ink },
+    muted: { color: palette.muted },
+    actionText: { color: palette.actionText },
+    warningText: { color: palette.warningText },
+    selectedBorder: { borderColor: palette.actionText },
+    subsurface: { backgroundColor: palette.surfaceAlt },
+    savedMark: { backgroundColor: palette.mode === "dark" ? colors.green : colors.greenDeep },
+    input: { backgroundColor: palette.controlSurface, borderColor: palette.border, color: palette.ink },
+  };
 }
 
 const styles = StyleSheet.create({
@@ -475,7 +716,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   content: {
-    padding: spacing.lg,
+    padding: spacing.xxl,
     paddingBottom: 260,
     gap: spacing.md,
   },
@@ -507,7 +748,9 @@ const styles = StyleSheet.create({
     minHeight: 52,
     borderRadius: radii.md,
     paddingHorizontal: spacing.md,
-    backgroundColor: colors.surface,
+    backgroundColor: "rgba(255, 255, 255, 0.78)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(20, 37, 29, 0.08)",
     color: colors.ink,
   },
   selectedHeader: {
@@ -632,18 +875,20 @@ const styles = StyleSheet.create({
     ...typography.heading,
     color: colors.ink,
   },
+  suggestionHint: { ...typography.caption, color: colors.muted, marginTop: -spacing.xs },
   emptyState: {
     gap: spacing.sm,
     alignItems: "flex-start",
   },
   result: {
-    minHeight: 78,
-    padding: spacing.md,
-    marginBottom: spacing.sm,
-    borderRadius: radii.md,
-    backgroundColor: colors.surface,
+    minHeight: 88,
     gap: spacing.sm,
   },
+  recipeSuggestion: { gap: spacing.sm },
+  recipeSuggestionTop: { flexDirection: "row", alignItems: "flex-start", gap: spacing.sm },
+  recipeSuggestionCopy: { flex: 1, minWidth: 0, gap: spacing.xs },
+  recipeSuggestionActions: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
+  recipeLogButton: { flex: 1, minHeight: 44 },
   resultSelectArea: {
     flexDirection: "row",
     alignItems: "center",
@@ -685,6 +930,9 @@ const styles = StyleSheet.create({
     ...typography.button,
     color: colors.green,
   },
+  warningText: {
+    ...typography.caption,
+  },
   stickyLogBar: {
     position: "absolute",
     left: spacing.lg,
@@ -692,18 +940,14 @@ const styles = StyleSheet.create({
   },
   stickyLogCard: {
     minHeight: 72,
+    borderRadius: radii.lg,
+  },
+  stickyLogContent: {
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.md,
-    borderRadius: radii.lg,
     padding: spacing.sm,
     paddingLeft: spacing.md,
-    backgroundColor: "rgba(255, 255, 255, 0.97)",
-    shadowColor: colors.ink,
-    shadowOpacity: 0.14,
-    shadowRadius: 18,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 8,
   },
   stickyLogCopy: {
     flex: 1,
@@ -722,4 +966,27 @@ const styles = StyleSheet.create({
     minWidth: 132,
     borderRadius: radii.pill,
   },
+  savedState: { flex: 1, alignItems: "center", justifyContent: "center", gap: spacing.md, paddingHorizontal: spacing.lg },
+  savedMark: { width: 72, height: 72, alignItems: "center", justifyContent: "center", borderRadius: radii.pill, backgroundColor: colors.greenDeep },
+  savedActions: { alignSelf: "stretch", gap: spacing.sm, marginTop: spacing.sm },
 });
+
+function localTimeKey() {
+  return new Intl.DateTimeFormat("en-GB", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).format(new Date());
+}
+
+function mealTypeLabel(mealType: MealType) {
+  const labels: Record<MealType, string> = {
+    breakfast: "breakfast",
+    lunch: "lunch",
+    dinner: "dinner",
+    snack: "snacks",
+    meal: "this time of day",
+  };
+
+  return labels[mealType];
+}

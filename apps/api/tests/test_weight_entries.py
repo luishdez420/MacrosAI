@@ -1,6 +1,6 @@
 from collections.abc import Generator
 
-from fastapi.testclient import TestClient
+from tests.http_client import ApiTestClient as TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool

@@ -13,7 +13,7 @@ from fastapi import Request
 from sqlalchemy.orm import Session
 
 from app.core.middleware import get_request_id
-from app.models.user import AuditLog
+from app.models.user import AuditDelivery, AuditLog
 
 
 def record_audit_event(
@@ -34,6 +34,9 @@ def record_audit_event(
     db.add(event)
     # Make the event available to later statements in the same sensitive-operation transaction.
     db.flush()
+    # The outbox is committed with the originating sensitive-operation event,
+    # so a worker can retry external delivery without blocking user requests.
+    db.add(AuditDelivery(audit_log_id=event.id))
     return event
 
 

@@ -1,6 +1,6 @@
 # Privacy Model
 
-Last updated: 2026-07-09
+Last updated: 2026-07-21
 
 Related documents: [[Current State]], [[Architecture]], [[Known Issues]], [[Roadmap]].
 
@@ -9,11 +9,14 @@ Food photos and weight history are sensitive personal data.
 ## Current implementation
 
 - Third-party API keys are backend-side rather than called directly from mobile.
-- Mobile stores access and refresh tokens in SecureStore. The API stores only a hash of refresh tokens, rotates refresh tokens on use, and revokes sessions on logout.
+- The mobile camera configuration requests camera access only. Microphone/audio recording is disabled for iOS and explicitly blocked from the Android build manifest because meal and barcode capture do not record audio.
+- In Clerk mode, `@clerk/clerk-expo` uses Expo SecureStore for the managed session-token cache. The mobile bundle contains only Clerk's publishable key; Clerk secret keys are never present on mobile. The API verifies Clerk tokens through public JWKS and stores only the mapped internal account identifier. The legacy local mode stores access/refresh tokens in SecureStore and hashes refresh tokens server-side; it is not production identity.
 - API responses use request IDs and consistent error envelopes.
+- Optional Sentry-compatible runtime reporting is privacy-minimized: API and mobile events retain only approved stable tags such as a request ID, while request, user, device, breadcrumb, context, and extra payload data are removed. Tracing, profiling, replay, session tracking, screenshots, and view-hierarchy capture are disabled. The reporting hook remains inactive until a deployment supplies the respective DSN.
 - User preferences include an image-retention-days field in the database model.
+- The dedicated Data Controls screen lets a signed-in user prepare a versioned current-user JSON export, review a recipient warning, explicitly acknowledge that the export may contain sensitive nutrition data, and then open the native system share sheet. The export is written only to the mobile cache directory for the share flow and is removed afterward. The app does not learn the recipient or control a copy after sharing. Data Controls also shows recent owner-only security-activity labels/outcomes/timestamps, saves an explicit retained-scan duration, and deletes the Living Nutrition profile only after typing `DELETE`. The activity list excludes request IDs, client fingerprints, tokens, credentials, and meal data. Temporary normalized analysis inputs are private and cleaned up after failure, cancellation, discard/retake, confirmation, or expiry. A completed meal retains scans only after an explicit confirmation choice; retained images are owner-scoped, use the selected deadline, can be deleted from meal detail, and use expiring access when configured object storage supports it. Deleting a Living Nutrition profile does not delete a managed Clerk identity.
 - Nutrition-label analysis is initiated explicitly by the user, sends the image through the backend to the configured vision provider, keeps only a temporary local mobile draft, and does not persist the image or extraction as evidence in the current implementation.
-- Meal and label analysis reject invalid base64, unsupported image signatures, and decoded image payloads larger than 12 MB before provider transmission.
+- Meal and label analysis reject oversized encoded fields before decoding, invalid base64, unsupported or malformed image signatures, animated images, decoded payloads larger than 12 MB, and images exceeding 36 megapixels. Meal multi-view intake also checks its 18 MB aggregate encoded-size budget before decoding any individual photo, including non-HTTP helper callers. Before provider transmission, the backend orientation-normalizes one still image, re-encodes it as JPEG, and removes EXIF/container metadata; it does not retain the normalized bytes. Validation responses and structured unexpected-error logs exclude raw image/base64 content, provider payloads, and sensitive filesystem/storage paths.
 
 ## Planned privacy and security controls
 
@@ -21,18 +24,16 @@ The product should add:
 
 - Backend-only third-party API keys
 - Encryption in transit
-- Private object storage
-- Time-limited signed URLs
-- Image deletion controls
-- Account deletion
-- Data export
+- Managed private object-storage deployment validation, including bucket policy and encryption configuration
+- Production validation of time-limited signed URLs and retained-image deletion
+- Managed-identity deletion coordination after internal-profile deletion
 - Secret management
-- Distributed API rate limiting beyond the current process-local limits on credential and paid image-analysis routes
-- Audit-log review, retention, and immutable delivery for sensitive operations
+- Trusted-proxy policy and production Redis monitoring beyond the implemented Redis-backed shared limits required by production configuration
+- Audit-log export and immutable delivery for sensitive operations, plus approval of a production retention schedule
 - Configurable image retention
 
 User meal photos must not be used for model training without separate explicit opt-in consent.
 
 ## Current limitation
 
-Basic current-user JSON export and local account deletion are implemented. Register, login, refresh, logout, export, and account deletion create minimal internal audit events containing only event type, outcome, timestamp, request ID, optional user link, and a one-way client fingerprint. Label photos are not persisted by the current extraction flow, but they are transmitted to the configured vision provider for analysis. Credential and paid image-analysis routes have process-local rolling-window limits; this does not provide multi-replica production protection. Private object storage, signed image URLs, stored image deletion controls, production account lifecycle, distributed rate limiting, audit-log review/retention, immutable audit delivery, and enforceable retention workflows are planned rather than implemented.
+The `living-nutrition-export/v1` current-user JSON export/native-share flow, owner-only security-activity visibility, Living Nutrition profile deletion, and a restricted server-side audit-review endpoint are implemented. Before sharing, the user must acknowledge that the export can include meal history, nutrition goals, weight, and hydration information; a share recipient can retain a copy outside the app's control. The file is temporary mobile-cache data only and is removed after the share flow. The backend provides private local-preview and encrypted S3-compatible storage implementations, lifecycle metadata, retry-safe expiration logic, scheduled retention-worker support, and profile deletion that attempts every remaining owned image before safely failing when any cleanup cannot complete. A failed cleanup records only the `user_data.account_delete` outcome, request correlation, and one-way client fingerprint; it never records image identifiers or storage keys. Durable analysis inputs are normalized, private, and deleted after failure, cancellation, discard, confirmation, or expiry. Retained completed-meal scans require explicit confirmation, have owner-only deletion and a deadline, and can receive a short-lived access URL only from configured object storage. Deleting the internal profile does not delete a Clerk identity. Register, login, refresh, logout, export, account deletion, and administrator audit review create minimal internal audit events containing only event type, outcome, timestamp, request ID, optional user link, and a one-way client fingerprint. The current user can view only the safe event label/outcome/timestamp subset while the account exists; a configured Clerk-subject allowlist controls server-side audit review, which returns no raw account identifiers or fingerprints. Account deletion anonymizes its historical audit link. Every event has a durable outbox row. When a deployment enables the required production HTTPS webhook and managed HMAC secret, the retention worker sends only event ID/type, outcome, request ID, timestamp, and schema version; it records delivered or bounded retry state without retaining receiver responses, and it never purges an event before delivery. This creates a verifiable external-delivery boundary, but the selected receiver must provide append-only/WORM guarantees and be independently validated before it can be called immutable. Production startup rejects an unset `AUDIT_LOG_RETENTION_DAYS`, disabled audit delivery, an unconfigured receiver/secret, a non-HTTPS receiver, or a short secret; local preview leaves delivery disabled and does not purge audit history. Label photos are not persisted by the current extraction flow, but they are transmitted to the configured vision provider for analysis. Credential and paid image-analysis routes have process-local rolling-window limits for local phone preview; production configuration requires an atomic Redis shared limiter, hashes its client keys before storage, and fails closed for protected routes when Redis cannot decide. Trusted-proxy policy and production Redis monitoring still need deployment validation. Production account lifecycle, approved audit-retention schedule, configured object-storage deployment validation, append-only receiver validation, and managed-identity deletion coordination remain incomplete.

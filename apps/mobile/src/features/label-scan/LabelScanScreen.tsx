@@ -3,7 +3,6 @@ import * as ImagePicker from "expo-image-picker";
 import { Link, useLocalSearchParams, useRouter } from "expo-router";
 import { useEffect, useRef, useState } from "react";
 import {
-  Alert,
   Image,
   Pressable,
   StyleSheet,
@@ -11,17 +10,23 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { Ionicons } from "@expo/vector-icons";
 
-import { colors, radii, spacing, typography } from "@living-nutrition/design-tokens";
+import { colors, radii, spacing, typography, type ThemePalette } from "@living-nutrition/design-tokens";
 import {
   ActionButton,
+  Card,
   InlineNotice,
+  ScreenShell,
 } from "../../shared/components/LivingUI";
 import { api } from "../../services/api";
 import { useLabelDraftStore } from "../../stores/labelDraftStore";
+import { useTheme } from "../../shared/theme/ThemeProvider";
 
 export function LabelScanScreen() {
   const router = useRouter();
+  const { palette } = useTheme();
+  const themed = labelThemeStyles(palette);
   const params = useLocalSearchParams<{ barcode?: string }>();
   const barcode = normalizeBarcode(stringParam(params.barcode));
   const cameraRef = useRef<CameraView>(null);
@@ -31,6 +36,7 @@ export function LabelScanScreen() {
   const [isCapturing, setIsCapturing] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
+  const labelAnalysisKeyRef = useRef<string | null>(null);
   const setLabelDraft = useLabelDraftStore((store) => store.setDraft);
   const clearLabelDraft = useLabelDraftStore((store) => store.clearDraft);
 
@@ -48,15 +54,16 @@ export function LabelScanScreen() {
       });
 
       if (!photo?.uri) {
-        Alert.alert("Label photo unavailable", "Try capturing the nutrition label again.");
+        setAnalysisError("The camera did not return a usable label photo. Try capturing it again or import a clear image.");
         return;
       }
 
       setLabelUri(photo.uri);
       setLabelBase64(photo.base64 || null);
+      labelAnalysisKeyRef.current = createLabelAnalysisKey();
       setAnalysisError(null);
     } catch {
-      Alert.alert("Label capture failed", "Try again, or import a clear label photo from your library.");
+      setAnalysisError("We could not capture that label photo. Try again, import a clear image, or enter the values manually.");
     } finally {
       setIsCapturing(false);
     }
@@ -76,9 +83,10 @@ export function LabelScanScreen() {
 
       setLabelUri(result.assets[0].uri);
       setLabelBase64(result.assets[0].base64 || null);
+      labelAnalysisKeyRef.current = createLabelAnalysisKey();
       setAnalysisError(null);
     } catch {
-      Alert.alert("Import failed", "Try another label photo or use the camera.");
+      setAnalysisError("We could not import that label photo. Try another image, use the camera, or enter the values manually.");
     }
   }
 
@@ -108,12 +116,14 @@ export function LabelScanScreen() {
 
     setAnalysisError(null);
     setIsAnalyzing(true);
+    const idempotencyKey = labelAnalysisKeyRef.current || createLabelAnalysisKey();
+    labelAnalysisKeyRef.current = idempotencyKey;
 
     try {
       const analysis = await api.analyzeNutritionLabel({
         imageBase64: labelBase64,
         barcode,
-      });
+      }, { idempotencyKey });
       setLabelDraft({ photoUri: labelUri, analysis });
       const search = new URLSearchParams({ labelCaptured: "1", labelAnalyzed: "1" });
       if (barcode) {
@@ -132,24 +142,31 @@ export function LabelScanScreen() {
   }
 
   if (!permission) {
-    return <View style={styles.screen} />;
+    return <View style={[styles.screen, { backgroundColor: palette.background }]} />;
   }
 
   if (!permission.granted) {
     return (
-      <SafeAreaView style={styles.permissionScreen}>
-        <Text style={styles.title}>Label capture needs camera access.</Text>
-        <Text style={styles.body}>
-          A clear label photo helps you manually verify the package values before creating a custom food.
-        </Text>
-        <ActionButton label="Enable camera" onPress={requestPermission} />
-        <ActionButton label="Import label photo" variant="secondary" onPress={importLabel} />
-      </SafeAreaView>
+      <ScreenShell scroll={false} contentStyle={styles.permissionScreen}>
+        <Card tone="soft" style={styles.permissionCard}>
+          <View style={[styles.permissionIcon, themed.permissionIcon]}>
+            <Ionicons name="document-text-outline" size={30} color={colors.green} />
+          </View>
+          <Text style={[styles.permissionEyebrow, themed.muted]}>Custom food review</Text>
+          <Text style={[styles.title, themed.ink]}>Label capture needs camera access.</Text>
+          <Text style={[styles.body, themed.muted]}>
+            A clear label photo helps you compare package values before creating a custom food. Nothing is saved from the photo automatically.
+          </Text>
+          <ActionButton label="Enable camera" onPress={requestPermission} />
+          <ActionButton label="Import label photo" variant="secondary" onPress={importLabel} />
+          <ActionButton label="Enter nutrition manually" variant="quiet" onPress={continueToCustomFood} />
+        </Card>
+      </ScreenShell>
     );
   }
 
   return (
-    <View style={styles.screen}>
+    <View style={[styles.screen, { backgroundColor: palette.background }]}>
       {labelUri ? (
         <Image source={{ uri: labelUri }} style={StyleSheet.absoluteFill} resizeMode="cover" />
       ) : (
@@ -160,14 +177,15 @@ export function LabelScanScreen() {
           <Link href={barcode ? `/custom-food?barcode=${encodeURIComponent(barcode)}` : "/custom-food"} asChild>
             <Pressable
               accessibilityRole="button"
-              style={styles.roundButton}
+              accessibilityLabel="Close nutrition label capture"
+              style={[styles.roundButton, themed.roundButton]}
               onPress={clearLabelDraft}
             >
-              <Text style={styles.roundButtonText}>Close</Text>
+              <Text style={[styles.roundButtonText, themed.ink]}>Close</Text>
             </Pressable>
           </Link>
-          <Pressable accessibilityRole="button" style={styles.roundButton} onPress={importLabel}>
-            <Text style={styles.roundButtonText}>Import</Text>
+          <Pressable accessibilityRole="button" accessibilityLabel="Import a nutrition label photo" style={[styles.roundButton, themed.roundButton]} onPress={importLabel}>
+            <Text style={[styles.roundButtonText, themed.ink]}>Import</Text>
           </Pressable>
         </View>
 
@@ -192,7 +210,7 @@ export function LabelScanScreen() {
           tone={analysisError ? "warning" : "neutral"}
         />
 
-        <View style={styles.bottomBar}>
+        <View style={[styles.bottomBar, themed.bottomBar]}>
           {labelUri ? (
             <View style={styles.analysisActions}>
               <View style={styles.analysisActionRow}>
@@ -202,6 +220,7 @@ export function LabelScanScreen() {
                   onPress={() => {
                   setLabelUri(null);
                   setLabelBase64(null);
+                  labelAnalysisKeyRef.current = null;
                   setAnalysisError(null);
                   clearLabelDraft();
                   }}
@@ -226,8 +245,9 @@ export function LabelScanScreen() {
             <>
               <ActionButton label="Import" variant="secondary" onPress={importLabel} style={styles.bottomButton} />
               <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Capture nutrition label photo"
+              accessibilityRole="button"
+              accessibilityLabel="Capture nutrition label photo"
+              accessibilityHint="Takes a photo for review. Extracted values are never saved automatically."
                 style={[styles.captureButton, isCapturing ? styles.disabled : undefined]}
                 onPress={captureLabel}
                 disabled={isCapturing}
@@ -251,6 +271,10 @@ function normalizeBarcode(value: string | undefined) {
   return String(value || "").replace(/\D/g, "");
 }
 
+function createLabelAnalysisKey() {
+  return `label-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 const styles = StyleSheet.create({
   screen: {
     flex: 1,
@@ -259,10 +283,11 @@ const styles = StyleSheet.create({
   permissionScreen: {
     flex: 1,
     justifyContent: "center",
-    padding: spacing.lg,
-    gap: spacing.md,
-    backgroundColor: colors.background,
+    padding: spacing.xl,
   },
+  permissionCard: { gap: spacing.md },
+  permissionIcon: { width: 64, height: 64, alignItems: "center", justifyContent: "center", borderRadius: radii.lg },
+  permissionEyebrow: { ...typography.eyebrow },
   overlay: {
     flex: 1,
     justifyContent: "space-between",
@@ -320,7 +345,7 @@ const styles = StyleSheet.create({
     gap: spacing.md,
     borderRadius: radii.lg,
     padding: spacing.sm,
-    backgroundColor: "rgba(255, 255, 255, 0.92)",
+    borderWidth: StyleSheet.hairlineWidth,
   },
   bottomButton: {
     flex: 1,
@@ -353,3 +378,13 @@ const styles = StyleSheet.create({
     opacity: 0.62,
   },
 });
+
+function labelThemeStyles(palette: ThemePalette) {
+  return {
+    ink: { color: palette.ink },
+    muted: { color: palette.muted },
+    permissionIcon: { backgroundColor: palette.mode === "dark" ? "rgba(47, 91, 57, 0.82)" : colors.limeSoft },
+    roundButton: { backgroundColor: palette.utilityGlass, borderColor: palette.border, borderWidth: StyleSheet.hairlineWidth },
+    bottomBar: { backgroundColor: palette.navigationGlass, borderColor: palette.border },
+  };
+}

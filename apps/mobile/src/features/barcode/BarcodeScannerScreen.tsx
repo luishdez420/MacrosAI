@@ -1,4 +1,5 @@
 import { CameraView, useCameraPermissions, type BarcodeScanningResult, type BarcodeType } from "expo-camera";
+import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { Link, useRouter } from "expo-router";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -17,10 +18,12 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import { colors, radii, spacing, typography } from "@living-nutrition/design-tokens";
+import { colors, radii, spacing, typography, type ThemePalette } from "@living-nutrition/design-tokens";
 import type { FoodSearchResult, MealCreate } from "@living-nutrition/shared-types";
 import { calculateConsumedNutrients, roundNutrientsForDisplay } from "@living-nutrition/validation";
-import { api } from "../../services/api";
+import { env } from "../../config/env";
+import { api, getStoredUserId } from "../../services/api";
+import { queueConfirmedMeal } from "../../services/offlineMealQueue";
 import {
   ActionButton,
   Card,
@@ -30,7 +33,9 @@ import {
   SourceBadge,
   StatusPill,
 } from "../../shared/components/LivingUI";
+import { useTheme } from "../../shared/theme/ThemeProvider";
 import { foodDetailHref } from "../food-detail/foodDetailLinks";
+import { qualityFlagDisplay } from "../food-detail/foodDetailPresentation";
 import {
   createMealFromFood,
   gramsForPortion,
@@ -49,22 +54,31 @@ import {
   shouldIgnoreBarcodeScan,
   type BarcodeLookupStatus,
 } from "./barcodePresentation";
+import { createMealActionScope, mealCreateIdempotencyKey } from "../../shared/domain/mealIdempotency";
+import { presentApiError } from "../../shared/domain/apiErrorPresentation";
+import { canQueueConfirmedMeal } from "../../shared/domain/offlineMealSync";
+import { blocksFoodLogging, foodQualityDisplay } from "../../shared/domain/foodQuality";
 
 const supportedBarcodeTypes: BarcodeType[] = ["ean13", "ean8", "upc_a", "upc_e", "code128"];
 
 export function BarcodeScannerScreen() {
   const router = useRouter();
   const queryClient = useQueryClient();
+  const { palette } = useTheme();
+  const themed = barcodeThemeStyles(palette);
   const [permission, requestPermission] = useCameraPermissions();
   const [barcodeInput, setBarcodeInput] = useState("");
   const [scannerPaused, setScannerPaused] = useState(false);
   const [lookupStatus, setLookupStatus] = useState<BarcodeLookupStatus>("idle");
   const [lookupMessage, setLookupMessage] = useState<string | undefined>(undefined);
+  const [saveNotice, setSaveNotice] = useState<string | undefined>(undefined);
   const [selectedFood, setSelectedFood] = useState<FoodSearchResult | undefined>(undefined);
   const [portionMode, setPortionMode] = useState<PortionMode>("servings");
   const [amount, setAmount] = useState("1");
+  const [mealSaved, setMealSaved] = useState(false);
   const lastScanRef = useRef({ barcode: "", scannedAt: 0 });
   const barcodeInputRef = useRef<TextInput>(null);
+  const mealActionScope = useRef(createMealActionScope("barcode")).current;
   const servingGramWeight = selectedFood ? getServingGramWeight(selectedFood) : undefined;
   const grams = gramsForPortion(portionMode, amount, servingGramWeight);
   const nutrients = selectedFood
@@ -90,24 +104,45 @@ export function BarcodeScannerScreen() {
       setLookupMessage(undefined);
       setScannerPaused(true);
       selectFood(food);
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => undefined);
     },
     onError: (error) => {
       setSelectedFood(undefined);
       setLookupStatus("error");
-      setLookupMessage(error.message);
+      setLookupMessage(
+        presentApiError(error, "We couldn't look up this barcode right now. Try again in a moment.").body
+      );
       setScannerPaused(true);
     },
   });
   const logMutation = useMutation({
-    mutationFn: (meal: MealCreate) => api.createMeal(meal),
+    mutationFn: ({ meal, idempotencyKey }: { meal: MealCreate; idempotencyKey: string }) =>
+      api.createMeal(meal, { idempotencyKey }),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["diary"] });
       await queryClient.invalidateQueries({ queryKey: ["foods", "recent"] });
-      router.replace("/");
+      setMealSaved(true);
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => undefined);
     },
-    onError: (error) => {
+    onError: async (error, variables) => {
+      if (canQueueConfirmedMeal(error)) {
+        const ownerId = await getStoredUserId();
+        if (ownerId) {
+          try {
+            await queueConfirmedMeal(ownerId, variables.meal, variables.idempotencyKey);
+            await queryClient.invalidateQueries({ queryKey: ["offline-meal-queue"] });
+            setSaveNotice("We could not reach Living Nutrition, so this confirmed packaged food is saved on this device and waiting for you to sync it from Today.");
+            return;
+          } catch {
+            // Use the normal retry message if device storage is unavailable.
+          }
+        }
+      }
+
       setLookupStatus("error");
-      setLookupMessage(error.message);
+      setLookupMessage(
+        presentApiError(error, "We couldn't save this packaged food right now. Try again in a moment.").body
+      );
     },
   });
 
@@ -133,7 +168,6 @@ export function BarcodeScannerScreen() {
     setScannerPaused(true);
     setLookupStatus("looking_up");
     setLookupMessage(undefined);
-    void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => undefined);
     lookupMutation.mutate(barcode);
   }
 
@@ -190,9 +224,17 @@ export function BarcodeScannerScreen() {
       return;
     }
 
+    if (blocksFoodLogging(selectedFood)) {
+      setLookupStatus("error");
+      setLookupMessage(
+        selectedFood.qualityAssessment?.summary ??
+          "This barcode record is missing essential per-100g nutrition data. Search for another record before logging."
+      );
+      return;
+    }
+
     Keyboard.dismiss();
-    logMutation.mutate(
-      createMealFromFood({
+    const confirmedMeal = createMealFromFood({
         food: selectedFood,
         grams,
         servingLabel: portionLabel(portionMode, amount, servingGramWeight),
@@ -200,8 +242,12 @@ export function BarcodeScannerScreen() {
         servingQuantity: parsePositiveNumber(amount),
         portionMode,
         source: "barcode",
-      })
-    );
+      });
+    setSaveNotice(undefined);
+    logMutation.mutate({
+      meal: confirmedMeal,
+      idempotencyKey: mealCreateIdempotencyKey(mealActionScope, confirmedMeal),
+    });
   }
 
   function changePortionMode(nextMode: PortionMode) {
@@ -214,14 +260,14 @@ export function BarcodeScannerScreen() {
   }
 
   if (!permission) {
-    return <View style={styles.screen} />;
+    return <View style={[styles.screen, { backgroundColor: palette.background }]} />;
   }
 
-  if (!permission.granted) {
+  if (!permission.granted && !env.e2eFixtureMode) {
     return (
-      <SafeAreaView style={styles.permissionScreen}>
-        <Text style={styles.title}>Barcode scanning needs camera access.</Text>
-        <Text style={styles.body}>
+      <SafeAreaView style={[styles.permissionScreen, { backgroundColor: palette.background }]}>
+        <Text style={[styles.title, themed.ink]}>Barcode scanning needs camera access.</Text>
+        <Text style={[styles.body, themed.muted]}>
           Packaged foods are most accurate when we can match the barcode to manufacturer label data.
         </Text>
         <ActionButton label="Enable camera" onPress={requestPermission} />
@@ -229,8 +275,17 @@ export function BarcodeScannerScreen() {
     );
   }
 
+  if (mealSaved) {
+    return (
+      <BarcodeSavedScreen
+        onViewToday={() => router.replace("/")}
+        onScanAnother={() => router.replace("/barcode")}
+      />
+    );
+  }
+
   return (
-    <SafeAreaView style={styles.screen}>
+    <SafeAreaView style={[styles.screen, { backgroundColor: palette.background }]}>
       <KeyboardAvoidingView
         style={styles.keyboardAvoider}
         behavior={Platform.OS === "ios" ? "padding" : "height"}
@@ -239,26 +294,42 @@ export function BarcodeScannerScreen() {
           <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
             <View style={styles.headerRow}>
               <View style={styles.headerCopy}>
-                <Text style={styles.eyebrow}>Barcode logging</Text>
-                <Text style={styles.title}>Scan the package.</Text>
-                <Text style={styles.body}>
+                <Text style={[styles.eyebrow, themed.muted]}>Barcode logging</Text>
+                <Text style={[styles.title, themed.ink]}>Scan the package.</Text>
+                <Text style={[styles.body, themed.muted]}>
                   We look up packaged foods by barcode, then ask you to confirm servings or grams before saving.
                 </Text>
               </View>
               <Link href="/" asChild>
-                <Pressable style={styles.textButton}>
-                  <Text style={styles.textButtonLabel}>Close</Text>
+                <Pressable accessibilityRole="button" accessibilityLabel="Close barcode scanner" style={styles.textButton}>
+                  <Text style={[styles.textButtonLabel, themed.actionText]}>Close</Text>
                 </Pressable>
               </Link>
             </View>
 
             <View style={styles.scannerCard}>
-              <CameraView
-                style={styles.camera}
-                facing="back"
-                barcodeScannerSettings={{ barcodeTypes: supportedBarcodeTypes }}
-                onBarcodeScanned={scannerPaused ? undefined : handleBarcodeScanned}
-              />
+              {permission.granted ? (
+                <CameraView
+                  accessible
+                  accessibilityLabel="Barcode camera preview"
+                  accessibilityHint={
+                    scannerPaused
+                      ? "Scanner is paused. Choose Scan again or type the barcode below."
+                      : "Point the camera at a package barcode."
+                  }
+                  style={styles.camera}
+                  facing="back"
+                  barcodeScannerSettings={{ barcodeTypes: supportedBarcodeTypes }}
+                  onBarcodeScanned={scannerPaused ? undefined : handleBarcodeScanned}
+                />
+              ) : (
+                <View
+                  accessibilityLabel="Barcode camera disabled for automated test fixture"
+                  style={styles.e2eCameraPlaceholder}
+                >
+                  <Text style={styles.e2eCameraPlaceholderText}>Automated test mode uses the barcode number below.</Text>
+                </View>
+              )}
               <View style={styles.scanFrame} />
               <View style={styles.scanCaption}>
                 <Text style={styles.scanCaptionText}>
@@ -300,20 +371,34 @@ export function BarcodeScannerScreen() {
               />
             ) : null}
 
+            {saveNotice ? (
+              <InlineNotice
+                title="Confirmed packaged food queued"
+                body={saveNotice}
+                tone="warning"
+              />
+            ) : null}
+
             <Card>
-              <Text style={styles.cardTitle}>Barcode number</Text>
+              <Text style={[styles.cardTitle, themed.ink]}>Barcode number</Text>
               <View style={styles.lookupRow}>
                 <TextInput
                   ref={barcodeInputRef}
-                  style={styles.input}
+                  accessibilityLabel="Barcode number"
+                  accessibilityHint="Type the number printed below a package barcode, then select Find."
+                  style={[styles.input, themed.input]}
                   value={barcodeInput}
                   onChangeText={setBarcodeInput}
                   placeholder="e.g. 012345678905"
+                  placeholderTextColor={palette.muted}
                   keyboardType="number-pad"
                   returnKeyType="done"
                   onSubmitEditing={lookupTypedBarcode}
                 />
                 <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Find barcode"
+                  accessibilityState={{ disabled: lookupMutation.isPending }}
                   style={[
                     styles.lookupButton,
                     lookupMutation.isPending ? styles.disabledButton : undefined,
@@ -330,8 +415,8 @@ export function BarcodeScannerScreen() {
               <Card>
                 <View style={styles.selectedHeader}>
                   <View style={styles.selectedCopy}>
-                    <Text style={styles.cardEyebrow}>Matched packaged food</Text>
-                    <Text numberOfLines={3} style={styles.selectedTitle}>
+                    <Text style={[styles.cardEyebrow, themed.muted]}>Matched packaged food</Text>
+                    <Text numberOfLines={3} style={[styles.selectedTitle, themed.ink]}>
                       {readableFoodName(selectedFood.displayName)}
                     </Text>
                     <View style={styles.badgeRow}>
@@ -340,40 +425,52 @@ export function BarcodeScannerScreen() {
                         tone={selectedFood.recordConfidence === "low" ? "warning" : "success"}
                       />
                       <StatusPill
-                        label={`${selectedFood.recordConfidence} confidence`}
-                        tone={selectedFood.recordConfidence === "low" ? "warning" : "success"}
+                        label={foodQualityDisplay(selectedFood.qualityAssessment).label}
+                        tone={foodQualityDisplay(selectedFood.qualityAssessment).tone}
                       />
                     </View>
                     {selectedFood.brandOwner ? (
-                      <Text style={styles.resultMeta}>{selectedFood.brandOwner}</Text>
+                      <Text style={[styles.resultMeta, themed.muted]}>{selectedFood.brandOwner}</Text>
                     ) : null}
                   </View>
-                  <Pressable style={styles.changeButton} onPress={resetScan}>
-                    <Text style={styles.changeButtonText}>Rescan</Text>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Scan a different barcode"
+                    style={styles.changeButton}
+                    onPress={resetScan}
+                  >
+                    <Text style={[styles.changeButtonText, themed.actionText]}>Rescan</Text>
                   </Pressable>
                 </View>
 
-                <View style={styles.sourcePanel}>
-                  <Text style={styles.sourceTitle}>Source and confidence</Text>
-                  <Text style={styles.sourceText}>
+                <View style={[styles.sourcePanel, themed.subsurface]}>
+                  <Text style={[styles.sourceTitle, themed.ink]}>Source and confidence</Text>
+                  <Text style={[styles.sourceText, themed.muted]}>
                     {selectedFood.sourceReference}
                   </Text>
                   {selectedFood.qualityFlags?.length ? (
-                    <Text style={styles.warningText}>
-                      Review flags: {selectedFood.qualityFlags.join(", ")}
+                    <Text style={[styles.warningText, themed.warningText]}>
+                      Review before logging: {selectedFood.qualityFlags
+                        .map((flag) => qualityFlagDisplay(flag).label)
+                        .join(". ")}
                     </Text>
                   ) : (
-                    <Text style={styles.sourceText}>
+                    <Text style={[styles.sourceText, themed.muted]}>
                       No obvious data-quality flags were found. Confirm the portion before logging.
                     </Text>
                   )}
+                  {blocksFoodLogging(selectedFood) ? (
+                    <Text style={[styles.warningText, themed.warningText]}>
+                      {selectedFood.qualityAssessment?.summary}
+                    </Text>
+                  ) : null}
                   <Link href={foodDetailHref(selectedFood.id)} asChild>
                     <Pressable
                       accessibilityRole="button"
                       accessibilityLabel={`View nutrition source for ${readableFoodName(selectedFood.displayName)}`}
-                      style={styles.sourceButton}
+                      style={[styles.sourceButton, themed.input]}
                     >
-                      <Text style={styles.sourceButtonText}>View full source</Text>
+                      <Text style={[styles.sourceButtonText, themed.actionText]}>View full source</Text>
                     </Pressable>
                   </Link>
                 </View>
@@ -399,27 +496,30 @@ export function BarcodeScannerScreen() {
 
                 <View style={styles.amountRow}>
                   <View style={styles.amountInputWrap}>
-                    <Text style={styles.inputLabel}>
+                    <Text style={[styles.inputLabel, themed.muted]}>
                       {portionInputLabel(portionMode)}
                     </Text>
                     <TextInput
-                      style={styles.amountInput}
+                      accessibilityLabel={portionInputLabel(portionMode)}
+                      accessibilityHint="Enter the amount you ate. Nutrition is calculated from the matched source record per 100 grams."
+                      style={[styles.amountInput, themed.input]}
                       value={amount}
                       onChangeText={setAmount}
                       keyboardType="decimal-pad"
                       placeholder={portionMode === "servings" ? "1" : portionMode === "ounces" ? "3.5" : "100"}
+                      placeholderTextColor={palette.muted}
                       returnKeyType="done"
                       blurOnSubmit
                       onSubmitEditing={Keyboard.dismiss}
                     />
                   </View>
-                  <View style={styles.servingHint}>
-                    <Text style={styles.servingHintValue}>{Math.round(grams || 0)}g</Text>
-                    <Text style={styles.servingHintLabel}>used</Text>
+                  <View style={[styles.servingHint, themed.subsurface]}>
+                    <Text style={[styles.servingHintValue, themed.ink]}>{Math.round(grams || 0)}g</Text>
+                    <Text style={[styles.servingHintLabel, themed.muted]}>used</Text>
                   </View>
                 </View>
 
-                <Text style={styles.hintText}>
+                <Text style={[styles.hintText, themed.muted]}>
                   {servingGramWeight
                     ? `1 serving = ${Math.round(servingGramWeight)}g from the source record.`
                     : "Servings are unavailable because this record has no verified gram weight. Use grams or ounces."} {portionMode === "ounces" ? "Ounces are converted to grams before macros are calculated." : ""}
@@ -435,19 +535,53 @@ export function BarcodeScannerScreen() {
                 <ActionButton
                   label={logMutation.isPending ? "Saving..." : "Log packaged food"}
                   onPress={logBarcodeMeal}
-                  disabled={logMutation.isPending}
+                  disabled={logMutation.isPending || blocksFoodLogging(selectedFood)}
                 />
               </Card>
             ) : null}
 
             <Link href="/manual-search" asChild>
-              <Pressable style={styles.secondaryButton}>
-                <Text style={styles.secondaryButtonText}>Search manually instead</Text>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Search for a food manually instead"
+                style={[styles.secondaryButton, themed.subsurface]}
+              >
+                <Text style={[styles.secondaryButtonText, themed.ink]}>Search manually instead</Text>
               </Pressable>
             </Link>
           </ScrollView>
         </TouchableWithoutFeedback>
       </KeyboardAvoidingView>
+    </SafeAreaView>
+  );
+}
+
+function BarcodeSavedScreen({
+  onViewToday,
+  onScanAnother,
+}: {
+  onViewToday: () => void;
+  onScanAnother: () => void;
+}) {
+  const { palette } = useTheme();
+  const themed = barcodeThemeStyles(palette);
+
+  return (
+    <SafeAreaView style={[styles.screen, { backgroundColor: palette.background }]}>
+      <View style={styles.savedState}>
+        <View accessible accessibilityLabel="Meal saved" style={[styles.savedMark, themed.savedMark]}>
+          <Ionicons name="checkmark" size={32} color={colors.white} />
+        </View>
+        <Text style={[styles.eyebrow, themed.muted]}>Saved to your diary</Text>
+        <Text style={[styles.title, themed.ink]}>Packaged food logged.</Text>
+        <Text style={[styles.body, themed.muted]}>
+          Your diary uses the matched source record and portion you confirmed. You can adjust this meal later from Today.
+        </Text>
+        <View style={styles.savedActions}>
+          <ActionButton label="View Today" onPress={onViewToday} />
+          <ActionButton label="Scan another package" variant="secondary" onPress={onScanAnother} />
+        </View>
+      </View>
     </SafeAreaView>
   );
 }
@@ -463,20 +597,34 @@ function ModeButton({
   onPress: () => void;
   disabled?: boolean;
 }) {
+  const { palette } = useTheme();
+  const themed = barcodeThemeStyles(palette);
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={disabled ? `${label} unavailable because no verified gram serving weight` : label}
       accessibilityState={{ disabled, selected: active }}
-      style={[styles.modeButton, active ? styles.activeModeButton : undefined, disabled ? styles.disabledModeButton : undefined]}
+      style={[styles.modeButton, themed.subsurface, active ? styles.activeModeButton : undefined, disabled ? styles.disabledModeButton : undefined]}
       onPress={onPress}
       disabled={disabled}
     >
-      <Text style={[styles.modeButtonText, active ? styles.activeModeButtonText : undefined, disabled ? styles.disabledModeButtonText : undefined]}>
+      <Text style={[styles.modeButtonText, { color: active ? palette.onPrimary : palette.ink }, disabled ? [styles.disabledModeButtonText, { color: palette.muted }] : undefined]}>
         {label}
       </Text>
     </Pressable>
   );
+}
+
+function barcodeThemeStyles(palette: ThemePalette) {
+  return {
+    ink: { color: palette.ink },
+    muted: { color: palette.muted },
+    actionText: { color: palette.actionText },
+    warningText: { color: palette.warningText },
+    subsurface: { backgroundColor: palette.surfaceAlt },
+    savedMark: { backgroundColor: palette.mode === "dark" ? colors.green : colors.greenDeep },
+    input: { backgroundColor: palette.controlSurface, borderColor: palette.border, color: palette.ink },
+  };
 }
 
 const styles = StyleSheet.create({
@@ -529,6 +677,9 @@ const styles = StyleSheet.create({
     ...typography.button,
     color: colors.green,
   },
+  savedState: { flex: 1, alignItems: "center", justifyContent: "center", gap: spacing.md, paddingHorizontal: spacing.lg },
+  savedMark: { width: 72, height: 72, alignItems: "center", justifyContent: "center", borderRadius: radii.pill, backgroundColor: colors.greenDeep },
+  savedActions: { alignSelf: "stretch", gap: spacing.sm, marginTop: spacing.sm },
   scannerCard: {
     height: 260,
     overflow: "hidden",
@@ -537,6 +688,18 @@ const styles = StyleSheet.create({
   },
   camera: {
     flex: 1,
+  },
+  e2eCameraPlaceholder: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    padding: spacing.lg,
+    backgroundColor: colors.charcoal,
+  },
+  e2eCameraPlaceholderText: {
+    ...typography.caption,
+    color: colors.white,
+    textAlign: "center",
   },
   scanFrame: {
     position: "absolute",

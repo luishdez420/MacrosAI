@@ -1,9 +1,12 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, waitFor } from "@testing-library/react-native";
 import type { ReactElement } from "react";
+import { StyleSheet } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
+import { themePalettes, type ThemePreference } from "@living-nutrition/design-tokens";
 import type { FoodDetail, MealRead } from "@living-nutrition/shared-types";
+import { ThemeProvider } from "../../../shared/theme/ThemeProvider";
 import { FoodDetailScreen } from "../FoodDetailScreen";
 
 const mockGetFood = jest.fn();
@@ -96,6 +99,20 @@ describe("FoodDetailScreen", () => {
     expect(view.getByText("Logged portion")).toBeTruthy();
     expect(view.getByLabelText("Calories: 89 kcal per 100 grams")).toBeTruthy();
   });
+
+  it("keeps source actions and correction placeholders readable in dark mode", async () => {
+    mockGetFood.mockResolvedValue(bananaDetail());
+
+    const view = await renderWithQueryClient(<FoodDetailScreen />, "dark");
+
+    await waitFor(() => expect(view.getByText("Nutrition per 100g")).toBeTruthy());
+    expect(StyleSheet.flatten(view.getByText("Close").props.style).color).toBe(
+      themePalettes.dark.actionText
+    );
+    expect(view.getByPlaceholderText(/calories look too high/).props.placeholderTextColor).toBe(
+      themePalettes.dark.muted
+    );
+  });
 });
 
 function bananaDetail(): FoodDetail {
@@ -141,6 +158,24 @@ function bananaDetail(): FoodDetail {
       },
     ],
     provenanceSummary: "USDA Foundation Food record normalized per 100 grams.",
+    retrievalHistory: [
+      {
+        displayName: "Bananas, raw",
+        dataType: "Foundation",
+        brandOwner: null,
+        publicationDate: "2024-04-01",
+        nutrientsPer100g: {
+          caloriesKcal: 89,
+          proteinGrams: 1.1,
+          carbohydrateGrams: 22.8,
+          fatGrams: 0.3,
+        },
+        qualityFlags: [],
+        sourceReference: "https://fdc.nal.usda.gov/fdc-app.html#/food-details/173944/nutrients",
+        sourceRetrievedAt: "2026-07-09T12:00:00.000Z",
+      },
+    ],
+    sourceConflicts: [],
   };
 }
 
@@ -203,7 +238,7 @@ function savedMeal(): MealRead {
   };
 }
 
-function renderWithQueryClient(element: ReactElement) {
+function renderWithQueryClient(element: ReactElement, themePreference: ThemePreference = "light") {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false, gcTime: Infinity },
@@ -212,15 +247,17 @@ function renderWithQueryClient(element: ReactElement) {
   });
 
   return render(
-    <SafeAreaProvider
-      initialMetrics={{
-        frame: { x: 0, y: 0, width: 390, height: 844 },
-        insets: { top: 47, left: 0, right: 0, bottom: 34 },
-      }}
-    >
-      <QueryClientProvider client={queryClient}>
-        {element}
-      </QueryClientProvider>
-    </SafeAreaProvider>
+    <ThemeProvider initialPreference={themePreference}>
+      <SafeAreaProvider
+        initialMetrics={{
+          frame: { x: 0, y: 0, width: 390, height: 844 },
+          insets: { top: 47, left: 0, right: 0, bottom: 34 },
+        }}
+      >
+        <QueryClientProvider client={queryClient}>
+          {element}
+        </QueryClientProvider>
+      </SafeAreaProvider>
+    </ThemeProvider>
   );
 }

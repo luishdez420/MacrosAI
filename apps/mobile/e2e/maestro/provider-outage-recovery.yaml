@@ -1,0 +1,11 @@
+appId: com.livingnutrition.app
+---
+- launchApp:
+    clearState: true
+- tapOn: "Search verified food records"
+- tapOn: "Search foods by name"
+- inputText: "fixture provider outage"
+- assertVisible: "Nutrition search is temporarily unavailable"
+- assertVisible: "Nutrition records are temporarily unavailable. Please try again shortly."
+- tapOn: "Try search again"
+- assertVisible: "Nutrition search is temporarily unavailable"

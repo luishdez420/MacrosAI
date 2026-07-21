@@ -61,6 +61,12 @@ const qualityFlagLabels: Record<string, LabeledDisplay> = {
     tone: "warning",
     description: "One or more core nutrients are missing from the normalized source record.",
   },
+  invalid_per_100g_value: {
+    label: "Invalid per-100g value",
+    tone: "danger",
+    description:
+      "A core nutrient value could not be read as a number. Review the package label or choose another record before logging.",
+  },
   missing_name: {
     label: "Missing food name",
     tone: "danger",
@@ -69,7 +75,13 @@ const qualityFlagLabels: Record<string, LabeledDisplay> = {
   zero_serving_size: {
     label: "Zero serving size",
     tone: "warning",
-    description: "The provider serving size is missing or zero, so servings may not convert to grams.",
+    description: "The provider supplied a zero serving size, so servings may not convert to grams.",
+  },
+  unverified_serving_basis: {
+    label: "Serving has no verified gram weight",
+    tone: "warning",
+    description:
+      "The provider names a serving but does not give a usable gram or milliliter basis. Enter grams for a more reliable calculation.",
   },
   serving_per_100g_conflict: {
     label: "Serving does not match per-100g data",
@@ -237,6 +249,8 @@ export function snapshotFoodDetailFromMealItem(item: MealItemRead): FoodDetail {
     ],
     provenanceSummary:
       "Saved meal snapshot. Live source lookup was unavailable, so these values come from the meal record saved at log time.",
+    retrievalHistory: [],
+    sourceConflicts: [],
   };
 }
 

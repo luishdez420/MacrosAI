@@ -7,6 +7,19 @@ on:
       - main
 
 jobs:
+  repository-hygiene:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reject tracked Python cache artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git ls-files | grep -E '(^|/)(__pycache__/|.*\.py[co]$)'; then
+            echo "Tracked Python cache artifacts are not allowed. Remove them from Git tracking."
+            exit 1
+          fi
+
   mobile:
     runs-on: ubuntu-latest
     steps:
@@ -16,6 +29,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - run: npm audit --omit=dev --audit-level=high
       - run: npm run mobile:typecheck
       - run: npm run mobile:test
 
@@ -26,7 +40,47 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - run: python -m pip install --upgrade pip
       - run: pip install -e "apps/api[dev]"
+      - run: python -m pip install "pip-audit>=2.7.3"
+      # The app is installed editable for tests and is not a published PyPI package.
+      # Audit every resolved third-party distribution while skipping that local project.
+      - run: pip-audit --skip-editable
       - run: cd apps/api && alembic heads
       - run: cd apps/api && ruff check app tests
       - run: cd apps/api && pytest
+
+  postgres-migrations:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: living_nutrition
+          POSTGRES_USER: living
+          POSTGRES_PASSWORD: living
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U living -d living_nutrition"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql+psycopg://living:living@localhost:5432/living_nutrition
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e "apps/api[dev]"
+      - run: cd apps/api && alembic upgrade head
+      - run: cd apps/api && alembic current --check-heads
+
+  api-container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build --pull --tag living-nutrition-api:ci apps/api
+      - run: docker run --rm aquasec/trivy:0.68.1 image --exit-code 1 --ignore-unfixed --severity HIGH,CRITICAL living-nutrition-api:ci
