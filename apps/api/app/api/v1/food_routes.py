@@ -8,6 +8,7 @@ from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.analysis.meal_analyzer import sanitize_base64_image
 from app.analysis.nutrition_label_analyzer import analyze_nutrition_label
 from app.core.ai_quota import (
     AI_OPERATION_LABEL_ANALYSIS,
@@ -272,6 +273,13 @@ async def create_nutrition_label_analysis(
                 "Enter the label values manually instead."
             ),
         )
+
+    # Reject unsafe or malformed image data before a quota reservation or
+    # idempotency record is created. This prevents invalid uploads from
+    # consuming an allowance and guarantees provider calls receive only a
+    # metadata-free normalized image.
+    sanitized_image = sanitize_base64_image(label_request.image_base64)
+
     resolved_key = resolve_idempotency_key(idempotency_key)
     reservation = reserve_idempotency_key(
         db,
@@ -311,7 +319,11 @@ async def create_nutrition_label_analysis(
         response.headers[name] = value
 
     try:
-        result = await analyze_nutrition_label(label_request.image_base64, label_request.barcode)
+        result = await analyze_nutrition_label(
+            label_request.image_base64,
+            label_request.barcode,
+            sanitized_image_base64=sanitized_image,
+        )
     except Exception:
         refund_ai_usage(db, usage_reservation, reason="analysis_failure")
         record_audit_event(

@@ -1,13 +1,14 @@
 from collections.abc import Generator
 
 from tests.http_client import ApiTestClient as TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.db.base import Base
 from app.db.session import get_db
 from app.main import app
+from app.models.user import RecentFood
 import app.models as _models  # noqa: F401
 
 
@@ -177,6 +178,10 @@ def test_create_meal_and_read_diary_totals() -> None:
         recent_after_update = client.get("/api/v1/foods/recent")
         assert recent_after_update.status_code == 200
         assert len(recent_after_update.json()["items"]) == 1
+        with TestingSessionLocal() as db:
+            recent_record = db.scalar(select(RecentFood))
+            assert recent_record is not None
+            assert recent_record.use_count == 2
 
         removed_recent = client.delete("/api/v1/foods/recent/usda:173944")
         assert removed_recent.status_code == 204

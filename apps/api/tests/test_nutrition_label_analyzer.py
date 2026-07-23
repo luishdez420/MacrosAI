@@ -111,10 +111,19 @@ def test_label_analysis_endpoint_returns_editable_unpersisted_result(monkeypatch
 
     calls = 0
 
-    async def fake_analyze(image_base64: str, barcode: str | None) -> NutritionLabelAnalysis:
+    image_base64 = tiny_jpeg_base64()
+
+    async def fake_analyze(
+        received_image_base64: str,
+        barcode: str | None,
+        *,
+        sanitized_image_base64: str | None = None,
+    ) -> NutritionLabelAnalysis:
         nonlocal calls
         calls += 1
-        assert image_base64 == "aGVsbG8gd29ybGQ="
+        assert received_image_base64 == image_base64
+        assert sanitized_image_base64 is not None
+        assert sanitized_image_base64 != received_image_base64
         assert barcode == "012345678905"
         return NutritionLabelAnalysis(
             display_name="Oat bar",
@@ -148,7 +157,7 @@ def test_label_analysis_endpoint_returns_editable_unpersisted_result(monkeypatch
         response = client.post(
             "/api/v1/foods/label-analysis",
             json={
-                "imageBase64": "aGVsbG8gd29ybGQ=",
+                "imageBase64": image_base64,
                 "barcode": "012345678905",
             },
             headers={"Idempotency-Key": "label-review-action-1"},
@@ -156,7 +165,7 @@ def test_label_analysis_endpoint_returns_editable_unpersisted_result(monkeypatch
         replayed = client.post(
             "/api/v1/foods/label-analysis",
             json={
-                "imageBase64": "aGVsbG8gd29ybGQ=",
+                "imageBase64": image_base64,
                 "barcode": "012345678905",
             },
             headers={"Idempotency-Key": "label-review-action-1"},
@@ -170,6 +179,45 @@ def test_label_analysis_endpoint_returns_editable_unpersisted_result(monkeypatch
     assert calls == 1
     assert response.json()["nutrientsPer100g"]["caloriesKcal"] == 400
     assert response.json()["requiresConfirmation"] is True
+
+
+def test_label_analysis_endpoint_validates_image_before_quota_or_idempotency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    Base.metadata.create_all(bind=engine)
+
+    def override_get_db() -> Generator[Session, None, None]:
+        db = TestingSessionLocal()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    def unexpected_reservation(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("Invalid images must not reserve idempotency or AI quota state.")
+
+    monkeypatch.setattr(settings, "ai_features_enabled", True)
+    monkeypatch.setattr(food_routes, "reserve_idempotency_key", unexpected_reservation)
+    monkeypatch.setattr(food_routes, "reserve_ai_usage", unexpected_reservation)
+    app.dependency_overrides[get_db] = override_get_db
+
+    try:
+        response = TestClient(app).post(
+            "/api/v1/foods/label-analysis",
+            json={"imageBase64": "aGVsbG8gd29ybGQ="},
+            headers={"Idempotency-Key": "invalid-label-image-1"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 400
+    assert "image" in response.json()["error"]["message"].lower()
 
 
 @pytest.mark.asyncio

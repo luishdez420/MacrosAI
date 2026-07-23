@@ -42,6 +42,12 @@ k6 run infrastructure/load/k6/abuse-resilience.js
 
 Use `LIVING_NUTRITION_LOAD_VUS` and `LIVING_NUTRITION_LOAD_DURATION` to increase a scenario gradually. Start with the defaults; never begin a new environment at high concurrency.
 
+### Repository fixture stack
+
+For a fully isolated local run, `docker-compose.fixture.yml` creates an ephemeral Postgres database, Redis, fixture-only API, and analysis worker. The API completes schema migration before the worker starts. It does not read the normal API `.env`, use Clerk, contact nutrition providers, or share the regular Docker Compose database. It exposes the API only at `127.0.0.1:18000`.
+
+Bring it up with a distinct Compose project, then follow the disposable-user setup above with `http://127.0.0.1:18000` as the base URL. Run k6 in the stack's Docker network so it can address `http://api:8000`, and destroy the complete stack and its volumes when the evidence is recorded.
+
 ## Initial budgets and evidence
 
 The scripts fail when reads exceed `500 ms` p95, idempotent meal writes exceed `800 ms` p95, any scenario exceeds `1%` failed HTTP requests, or checks drop below `99%`. These are initial guardrails, not a capacity claim. Record the target commit, environment, VUs, duration, API replica count, Redis configuration, database size, output summary, and observed saturation before changing them.

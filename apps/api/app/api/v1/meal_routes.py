@@ -3,6 +3,8 @@ from datetime import UTC, date, datetime, time, timedelta
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy import Select, select, update
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.auth import CurrentUser, ensure_current_user
@@ -538,25 +540,33 @@ def upsert_recent_foods(db: Session, user_id: str, items: list[MealItemCreate]) 
         if not source_record:
             continue
 
-        recent = db.scalar(
-            select(RecentFood).where(
-                RecentFood.user_id == user_id,
-                RecentFood.food_source_record_id == source_record.id,
+        insert = recent_food_insert_for(db)
+        statement = insert(RecentFood).values(
+            user_id=user_id,
+            food_source_record_id=source_record.id,
+            last_used_at=now,
+            use_count=1,
+        )
+        db.execute(
+            statement.on_conflict_do_update(
+                index_elements=["user_id", "food_source_record_id"],
+                set_={
+                    "last_used_at": now,
+                    "use_count": RecentFood.use_count + 1,
+                },
             )
         )
 
-        if recent:
-            recent.last_used_at = now
-            recent.use_count += 1
-        else:
-            db.add(
-                RecentFood(
-                    user_id=user_id,
-                    food_source_record_id=source_record.id,
-                    last_used_at=now,
-                    use_count=1,
-                )
-            )
+
+def recent_food_insert_for(db: Session):
+    """Return the database-native atomic upsert builder for supported local/production stores."""
+
+    dialect = db.get_bind().dialect.name
+    if dialect == "postgresql":
+        return postgresql_insert
+    if dialect == "sqlite":
+        return sqlite_insert
+    raise RuntimeError(f"Recent-food upsert is not supported for database dialect: {dialect}")
 
 
 def get_or_create_food_source_record(

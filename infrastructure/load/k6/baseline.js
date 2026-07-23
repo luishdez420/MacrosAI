@@ -27,7 +27,9 @@ export default function ({ token }) {
     "health endpoint is available": (response) => response.status === 200,
   });
 
-  const search = get("/api/v1/foods/search?query=banana&locale=en-US");
+  const search = get("/api/v1/foods/search?query=banana&locale=en-US", {
+    headers: bearerHeaders(token),
+  });
   check(search, {
     "catalog search succeeds": (response) => response.status === 200,
     "catalog search returns a food list": (response) => Array.isArray(response.json("items")),

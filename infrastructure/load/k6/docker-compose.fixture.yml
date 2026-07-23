@@ -1,0 +1,66 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: living
+      POSTGRES_PASSWORD: living
+      POSTGRES_DB: living_nutrition
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U living -d living_nutrition"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  api:
+    build:
+      context: ../../../apps/api
+    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    environment: &fixture_environment
+      ENVIRONMENT: development
+      DATABASE_URL: postgresql+psycopg://living:living@postgres:5432/living_nutrition
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: load-test-only-secret-not-for-any-deployment
+      IDENTITY_PROVIDER: local
+      ALLOW_DEV_AUTH: "true"
+      ALLOW_LEGACY_LOCAL_TOKENS: "true"
+      E2E_FIXTURE_MODE: "true"
+      AI_FEATURES_ENABLED: "true"
+      RATE_LIMIT_ENABLED: "true"
+      RATE_LIMIT_BACKEND: redis
+      RATE_LIMIT_FOOD_SEARCH_MAX_REQUESTS: "1000"
+      RATE_LIMIT_ANALYSIS_MAX_REQUESTS: "500"
+      RATE_LIMIT_ANALYSIS_USER_MAX_REQUESTS: "500"
+      NUTRITION_PROVIDER_CIRCUIT_BREAKER_BACKEND: redis
+      AUDIT_DELIVERY_BACKEND: disabled
+      OPENAI_API_KEY: ""
+      AUTO_MIGRATE_ON_STARTUP: "false"
+    ports:
+      - "127.0.0.1:18000:8000"
+    healthcheck:
+      test:
+        ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  analysis-worker:
+    build:
+      context: ../../../apps/api
+    command: python -m app.workers.meal_analysis
+    environment: *fixture_environment
+    depends_on:
+      api:
+        condition: service_healthy

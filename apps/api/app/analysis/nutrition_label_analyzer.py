@@ -35,6 +35,8 @@ class RawNutritionLabelExtraction(BaseModel):
 async def analyze_nutrition_label(
     image_base64: str,
     barcode: str | None = None,
+    *,
+    sanitized_image_base64: str | None = None,
 ) -> NutritionLabelAnalysis:
     if not settings.ai_features_enabled:
         raise HTTPException(
@@ -45,13 +47,16 @@ async def analyze_nutrition_label(
             ),
         )
 
+    # Route callers validate and normalize the image before reserving an AI
+    # allowance. Keep the same validation here for direct callers, while
+    # accepting that already-normalized value to avoid processing it twice.
+    sanitized_image = sanitized_image_base64 or sanitize_base64_image(image_base64)
+
     if not settings.openai_api_key:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="OPENAI_API_KEY is missing, so the nutrition label cannot be analyzed.",
         )
-
-    sanitized_image = sanitize_base64_image(image_base64)
 
     try:
         async with httpx.AsyncClient(timeout=35) as client:
