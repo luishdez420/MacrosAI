@@ -10,7 +10,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 CONFIG_FILE = Path(__file__).resolve()
 API_ROOT = CONFIG_FILE.parents[2]
-REPO_ROOT = CONFIG_FILE.parents[4]
+# Source checkouts have the repository root four levels above this file. The
+# production image copies the API into ``/app`` instead, where that parent does
+# not exist. Falling back to ``API_ROOT`` keeps optional dotenv discovery
+# available locally without preventing an environment-configured container
+# from starting.
+REPO_ROOT = CONFIG_FILE.parents[4] if len(CONFIG_FILE.parents) > 4 else API_ROOT
 
 
 class Settings(BaseSettings):
