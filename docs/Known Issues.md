@@ -1,6 +1,6 @@
 # Known Issues
 
-Last updated: 2026-07-21
+Last updated: 2026-07-22
 
 This document tracks verified issues and risks. See [[Current State]], [[Architecture]], and [[Roadmap]].
 
@@ -26,7 +26,7 @@ Status: Accepted constraint
 
 Affected area: Hosted personal testing
 
-Description: The root `render.yaml` provisions only a free sleeping API and temporary free Postgres database. It runs memory-only rate limiting and provider-circuit state, and has no workers, Redis, R2, Sentry, audit delivery, or production monitoring. `AI_FEATURES_ENABLED=false` rejects camera and nutrition-label analysis before images are stored, quota is reserved, or OpenAI is called. The paid production topology remains separately preserved in `render.production.yaml`.
+Description: The root `render.yaml` provisions only a free sleeping API and temporary free Postgres database. It runs memory-only rate limiting and provider-circuit state, and has no workers, Redis, R2, Sentry, audit delivery, or production monitoring. `AI_FEATURES_ENABLED=false` rejects camera and nutrition-label analysis before images are stored, quota is reserved, or OpenAI is called. The checked-in Blueprint passed Render CLI schema validation on 2026-07-21 with zero planned actions, but no hosted preview has been created or validated with the real Clerk tenant. The paid production topology remains separately preserved in `render.production.yaml`.
 
 User or engineering impact: Manual/provider-backed flows can be tested without a Render charge, but cold starts are expected, data is not production durable, and camera/label analysis plus retained image workflows are unavailable.
 
@@ -50,7 +50,7 @@ Recommended resolution: Create separate managed API and mobile Sentry projects/e
 
 Severity: High
 
-Status: Open
+Status: Resolved 2026-07-21
 
 Affected area: Production rate limiting and client-address interpretation
 
@@ -82,11 +82,11 @@ Status: Partially resolved
 
 Affected area: Retry safety, paid image analysis, offline synchronization
 
-Description: `POST /meals`, `POST /meal-analysis`, `POST /meal-analysis/jobs`, `POST /foods/label-analysis`, `POST /foods/custom`, `POST /foods/{id}/correction-reports`, `POST /recipes`, and `POST /recipes/{id}/log` now use a database-backed, user-scoped idempotency ledger. Exact replays return the completed response, changed reuse returns `409`, and camera/label-image bytes are never stored in that ledger. Correction-report replays retain only the owned report resource link, then reconstruct the reporter-safe response, so free-form report text is not duplicated into the ledger. Paid AI operations now couple that replay boundary to one durable entitlement/usage record, but the ledger currently has no scheduled retention cleanup, while exports, account-sensitive mutations, updates, and other retry-sensitive operations have not yet adopted it. Durable camera jobs create normalized temporary private inputs, poll safe owner-only state, support cancellation, run through a separate worker, and complete only as review results. The mobile app can resume one account-scoped pending job after restart without retaining its image locally; a user-visible multi-job history remains incomplete.
+Description: `POST /meals`, `POST /meal-analysis`, `POST /meal-analysis/jobs`, `POST /foods/label-analysis`, `POST /foods/custom`, `POST /foods/{id}/correction-reports`, `POST /recipes`, `POST /recipes/{id}/log`, and `POST /weight` use a database-backed, user-scoped idempotency ledger. Exact replays return the completed response, changed reuse returns `409`, and camera/label-image bytes are never stored in that ledger. Correction-report replays retain only the owned report resource link, then reconstruct the reporter-safe response, so free-form report text is not duplicated into the ledger. The retention worker now deletes expired replay records in bounded oldest-first batches. Paid AI operations couple that replay boundary to one durable entitlement/usage record. Direct saved-meal edits now have a separate optimistic-concurrency boundary: every response carries a revision and `PATCH /meals/{id}` conditionally claims the caller's `If-Match` revision before modifying item snapshots. Remaining gaps are deliberate destructive/account lifecycle behavior, credential/session operations, queued meal edits, and a user-directed merge view for competing meal versions. Account deletion removes the user-scoped ledger with the account, while token rotation and local-auth compatibility require their own security-aware replay and revocation rules rather than a generic response cache. Durable camera jobs create normalized temporary private inputs, poll safe owner-only state, support cancellation, run through a separate worker, and complete only as review results. The mobile app can resume one account-scoped pending job after restart without retaining its image locally; a user-visible multi-job history remains incomplete.
 
-User or engineering impact: Confirmed meal retries and repeated camera-analysis requests are protected, but an interrupted operation outside these two paths can still duplicate work or require manual recovery. Completed replay records remain until future cleanup work is introduced.
+User or engineering impact: The primary content-creation and daily-weight actions are replay-safe, completed replay records no longer accumulate indefinitely, and direct meal edits cannot silently overwrite a newer revision. A retry during account deletion or security-token work still needs a specifically designed recovery path; other mutable resources and offline edit/merge flows still need explicit concurrency rules.
 
-Recommended resolution: Add retention cleanup with an audit-safe policy, extend the ledger to remaining high-risk mutations such as exports and account-sensitive operations, add a complete durable-job history/retry surface, then introduce billing-provider integration before production provider-cost exposure.
+Recommended resolution: Define explicit recovery and replay contracts for account deletion and managed identity/session operations, extend concurrency decisions deliberately to other mutable resources and queued edits, add a complete durable-job history/retry surface, then introduce billing-provider integration before production provider-cost exposure.
 
 ## AI quota guard is pre-billing infrastructure only
 
@@ -96,11 +96,11 @@ Status: Partially resolved
 
 Affected area: Camera analysis, nutrition-label capture, provider-cost control
 
-Description: The API now creates a default free entitlement lazily, supports configured free, trial, paid, internal, and disabled tiers, and records each AI reservation, settlement, refund, or expiration without retaining images, prompts, provider responses, nutrition data, or raw idempotency keys. It enforces configurable fixed-window operation/image allowances and a per-user concurrent-analysis limit before vision work starts. It does not yet include a billing provider, customer-facing usage screen, background reconciliation worker, scheduled expired-reservation cleanup, operator dashboard, or production multi-replica validation.
+Description: The API now creates a default free entitlement lazily, supports configured free, trial, paid, internal, and disabled tiers, and records each AI reservation, settlement, refund, or expiration without retaining images, prompts, provider responses, nutrition data, or raw idempotency keys. It enforces configurable rolling-window operation/image allowances and a per-user concurrent-analysis limit before vision work starts. The retention worker expires abandoned reservations in bounded oldest-first batches, so stale capacity does not depend on another request from the same user. `GET /account/ai-usage` gives only the signed-in account's remaining operation/image/concurrency capacity and potential next availability; Camera and label capture show that advisory preflight before an image is submitted. It does not include a billing provider, full account usage history, operator dashboard, or production multi-replica validation.
 
 User or engineering impact: Preview and API consumers are protected from accidental duplicate or unbounded camera/label analysis, but entitlement assignment and allowance changes remain administrator/database configuration work. The Premium screen remains non-purchasable.
 
-Recommended resolution: Connect tier changes to a billing/identity source, add a safe account usage surface, scheduled reconciliation and operational metrics, then validate concurrency across PostgreSQL/Redis-backed production replicas.
+Recommended resolution: Connect tier changes to a billing/identity source, decide whether a fuller account-level usage history is useful without exposing operational metadata, add an operator dashboard, then validate concurrency and the reconciliation metric across PostgreSQL/Redis-backed production replicas.
 
 ## Private image storage is a local worker seam, not production retention
 
@@ -112,11 +112,11 @@ Status: Partially resolved
 
 Affected area: Camera analysis, privacy, durable analysis jobs
 
-Description: The API now has a tested local private-filesystem storage abstraction with generated keys, path-traversal protection, atomic writes, private file permissions, and no public URL method. It also supports an S3-compatible backend with server-side encryption and read URLs presigned for at most 15 minutes; production startup rejects local storage or a missing bucket. `meal_images` and `analysis_job_images` hold deletion/retry metadata, account deletion fails safely if cleanup cannot complete, and Docker Compose has bounded analysis, retention, and stale-provider refresh workers. Durable camera jobs store only normalized temporary inputs; a completed meal retains scans only after the user explicitly chooses retention during confirmation. Owner authorization around signed reads and user-facing retained-image deletion are implemented. Cloud-worker deployment validation, actual signed-URL viewing in a deployed app, and a complete multi-job recovery/history experience remain incomplete.
+Description: The API now has a tested local private-filesystem storage abstraction with generated keys, path-traversal protection, atomic writes, private file permissions, and no public URL method. It also supports an S3-compatible backend with server-side encryption and read URLs presigned for at most 15 minutes; production startup rejects local storage or a missing bucket. `meal_images` and `analysis_job_images` hold deletion/retry metadata, account deletion fails safely if cleanup cannot complete, and Docker Compose has bounded analysis, retention, and stale-provider refresh workers. Each worker now writes an anonymous process heartbeat, and production readiness fails closed if a required worker becomes stale. Durable camera jobs store only normalized temporary inputs; a completed meal retains scans only after the user explicitly chooses retention during confirmation. Owner authorization around signed reads and user-facing retained-image deletion are implemented. Cloud-worker deployment validation, actual signed-URL viewing in a deployed app, worker-health alerting, and a complete multi-job recovery/history experience remain incomplete.
 
 User or engineering impact: The worker can safely process temporary inputs across API restarts and the app can restore one pending review, but users cannot browse, retry, or manage multiple historical analysis jobs.
 
-Recommended resolution: Configure a private S3-compatible bucket and managed credentials, deploy and monitor the retention worker, validate signed-URL viewing on supported devices, and add multi-job recovery/history without weakening the current consented retention boundary.
+Recommended resolution: Configure a private S3-compatible bucket and managed credentials, deploy all three workers with heartbeat enforcement and alerts, validate signed-URL viewing on supported devices, and add multi-job recovery/history without weakening the current consented retention boundary.
 
 ## Clerk production configuration still needs a live-environment validation
 
@@ -132,7 +132,7 @@ User or engineering impact: A misconfigured Clerk issuer, JWKS URL, OAuth redire
 
 Recommended resolution: Create and configure the Clerk application, enable the intended email/password, email-code, and Google flows, register the `livingnutrition://` redirect, set production environment variables, verify the full journey in an EAS development build, and set a short migration deadline only if legacy users must be preserved. The mobile screen asks Clerk which factors the identifier supports, prefers its advertised password factor for email/password accounts, and uses email code only when password is unavailable. A verified sign-up that still requires a supported username, name, or legal-acceptance field stays in the original Clerk sign-up attempt until that account completes; if the user returns to sign in with that email, the screen restores the remembered requirements rather than attempting a factor. Clerk's structured invalid-strategy codes and message variants clear the old attempt before a fresh advertised email-code alternative is considered. The live tenant still needs validation. Add mobile integration/E2E coverage for Clerk screens and Clerk account-linking behavior before production release.
 
-## Public provider-catalog search needs a production access policy
+## Authenticated provider-catalog search still needs production budget validation
 
 Severity: Medium
 
@@ -140,11 +140,11 @@ Status: Partially resolved
 
 Affected area: Food search, provider abuse controls, API edge security
 
-Description: `GET /api/v1/foods/search` currently searches shared USDA/Open Food Facts catalog data without an authenticated account. It deliberately excludes user-created foods and cannot reveal another user's records. It now has an independent configurable IP-only `RATE_LIMIT_FOOD_SEARCH_*` budget that returns the standard correlated `429` envelope and is hashed in Redis in production. The current [[architecture/authorization-boundaries|Authorization Boundaries]] inventory records this distinction so it is not mistaken for an owner-scoped route. It still does not have an authenticated-user budget because the endpoint is public.
+Description: `GET /api/v1/foods/search` now requires an authenticated account before it searches the shared USDA/Open Food Facts catalog. It deliberately excludes user-created foods and cannot reveal another user's records. It has an independent configurable IP-only `RATE_LIMIT_FOOD_SEARCH_*` budget that returns the standard correlated `429` envelope and is hashed in Redis in production. The current [[architecture/authorization-boundaries|Authorization Boundaries]] inventory records the shared-catalog boundary separately from private owner-scoped records.
 
-User or engineering impact: The endpoint is bounded against simple client-IP bursts but remains an unauthenticated provider proxy. Shared-network users also share the same budget.
+User or engineering impact: The endpoint can no longer be used as an anonymous provider proxy. Shared-network users still share the same IP budget, and the production budget has not been validated against real traffic.
 
-Recommended resolution: Decide whether catalog search must require a Living Nutrition session or should remain public behind the current anonymous budget plus stronger cache, abuse-monitoring, and deployment policy. Record the decision, validate the budget against real provider limits, and include it in the production rate-limit review.
+Recommended resolution: Validate the IP budget against real provider limits and expected authenticated traffic, then include the result in the production rate-limit review. Decide later whether a separate per-user catalog budget is justified.
 
 ## Production rate-limit deployment validation remains incomplete
 
@@ -154,7 +154,7 @@ Status: Partially resolved
 
 Affected area: API edge security, Redis, deployment
 
-Description: Production configuration now requires Redis-backed limits and a validated `TRUSTED_PROXY_CIDRS` allowlist. The API accepts `X-Forwarded-For` only from a direct peer in that allowlist, resolves the first non-proxy address from the trusted chain, hashes the result before Redis storage, and falls back safely to the direct peer for untrusted or malformed headers. Authentication routes are IP-scoped; paid analysis uses atomic IP and verified-user budgets, and a denied user check cannot consume a separate IP budget. `GET /api/v1/health/ready` checks database/schema plus the configured Redis limiter without exposing connection details, and tests prove shared and multi-key atomic windows across independent limiter instances. A protected Prometheus-compatible `/metrics` endpoint exposes normalized request, latency, rate-limit, and readiness data without client or user data. The chosen hosting platform, its proxy CIDRs, deployed multi-replica Redis validation, metrics collector, dashboards, alerts, and incident response runbook are not yet configured.
+Description: Production configuration now requires Redis-backed limits, required aggregate worker heartbeats, and a validated `TRUSTED_PROXY_CIDRS` allowlist. The API accepts `X-Forwarded-For` only from a direct peer in that allowlist, resolves the first non-proxy address from the trusted chain, hashes the result before Redis storage, and falls back safely to the direct peer for untrusted or malformed headers. Authentication routes are IP-scoped; paid analysis uses atomic IP and verified-user budgets, and a denied user check cannot consume a separate IP budget. `GET /api/v1/health/ready` checks database/schema, the configured Redis limiter/provider circuit, and static worker-type health without exposing connection or process details, and tests prove shared and multi-key atomic windows across independent limiter instances. A protected Prometheus-compatible `/metrics` endpoint exposes normalized request, latency, rate-limit, worker-health, and readiness data without client or user data. The chosen hosting platform, its proxy CIDRs, deployed multi-replica Redis/worker validation, metrics collector, dashboards, alerts, and incident response runbook are not yet configured.
 
 User or engineering impact: The application will fail safely rather than start in a production-like configuration without a proxy policy, but it cannot be considered deployment-ready until the real load balancer and Redis behavior are tested under replica and outage conditions.
 
@@ -242,11 +242,11 @@ Status: Partially resolved
 
 Affected area: Manual logging speed, backend API, mobile UX
 
-Description: Favorite foods can be added/removed from food provenance, displayed in Manual Search, searched/filtered/sorted in Saved Foods, individually removed, and bulk cleared for visible results. Recent foods are automatically persisted from logged meal items, displayed in Manual Search, searchable/filterable/sortable in Saved Foods, individually removable, and bulk clearable for visible results. Richer saved-food organization controls are not complete.
+Description: Favorite foods can be added/removed from food provenance, displayed in Manual Search, searched/filtered/sorted in Saved Foods, individually removed, and bulk cleared for visible results. A favorite can carry up to ten account-private organization tags; tags are searchable/filterable in Saved Foods, owner-isolated, exported with the favorite, and never alter provider records or meal snapshots. Recent foods are automatically persisted from logged meal items, displayed in Manual Search, searchable/filterable/sortable in Saved Foods, individually removable, and bulk clearable for visible results. Folders, shared tags, recipes-as-favorites, and richer grouping are not complete.
 
-User or engineering impact: Repeat logging is faster and saved foods are easier to find, sort, and clear, but saved-food management is still basic.
+User or engineering impact: Repeat logging is faster and favorites can be labeled without contaminating nutrition provenance, but saved-food management is still basic.
 
-Recommended resolution: Add richer saved-food grouping and explicit organization controls.
+Recommended resolution: Add richer saved-food grouping and explicit organization controls after validating whether folders or recipe-centric reuse solve a real repeat-logging problem.
 
 ## Limited weight-tracking workflow
 
@@ -256,11 +256,11 @@ Status: Partially resolved
 
 Affected area: Goals and progress tracking
 
-Description: Basic weight-entry API and Profile logging/history flow exist, including entry editing/deletion, a unit-aware trend graph, and a persisted maintain/cut/gain direction. Progress now shows an optional selected-period pattern from saved entries, but it is client-side, descriptive only, and has no comparative or coaching model.
+Description: Basic weight-entry API and Profile logging/history flow exist, including entry editing/deletion and a unit-aware trend graph. `GET /insights/range` now calculates a selected-period comparison on the server from the entries and effective nutrition-goal revisions inside the requested dates. It exposes the check-in count, date span, gram change, data sufficiency, goal-revision count, and whether stored goal direction was consistent, changed, or unavailable. Goals saved before the goal-direction migration have no historical direction and intentionally remain unavailable rather than inferred.
 
-User or engineering impact: Users can log, edit, view, and delete recent weight entries, see a simple trend, compare it with the selected direction, and view selected-range/monthly nutrition summaries, but richer goal-integrated progress recommendations remain basic.
+User or engineering impact: Users can inspect an honest, date-bounded descriptive comparison without a client-side out-of-range lookup or a claim that a short pattern proves goal progress. Longitudinal trends, statistical smoothing, and any medical or coaching interpretation remain out of scope.
 
-Recommended resolution: Add richer comparative trends only after defining data-quality thresholds and continue avoiding medical conclusions from short-term changes.
+Recommended resolution: Validate whether longer-term aggregation is useful before adding it. Preserve the current explicit thresholds and avoid medical conclusions, predictions, or behavior prescriptions from weight changes.
 
 ## Limited hydration workflow
 
@@ -286,9 +286,9 @@ Affected area: Progress ranges, nutrition goals
 
 Description: This issue was resolved by making `PUT /goals` create or update an effective-date revision and by returning the calorie target effective on every insight day. The Progress chart now renders the daily target path and goal-day status against the historical target rather than applying a newer target retroactively.
 
-User or engineering impact: Historical calories, protein, fiber, target paths, and goal-day counts are now evaluated against the target active on each date. Future work still needs weight-integrated progress interpretation and comparative insight periods.
+User or engineering impact: Historical calories, protein, fiber, target paths, and goal-day counts are evaluated against the target active on each date. Selected-period weight comparisons now use those effective revisions and stored post-migration direction context; older directions remain unavailable.
 
-Recommended resolution: No additional remediation is required for historical calorie-target interpretation. Build weight-integrated coaching and comparison periods as separate product work.
+Recommended resolution: No additional remediation is required for historical calorie-target interpretation. Avoid coaching claims; consider richer longitudinal aggregation only after a separate product and safety decision.
 
 ## Incomplete custom-food lifecycle
 
@@ -328,11 +328,27 @@ Status: Open
 
 Affected area: Mobile reliability, CI
 
-Description: Backend tests, mobile typecheck, and initial mobile Jest coverage for the food provenance screen, saved-meal source fallback, food provenance presentation, saved-meal portion/replacement/addition/removal save behavior, camera capture/import recovery, camera confirmation save blocking and multi-view payload/snapshot behavior, multi-angle capture bounds, barcode no-match screen recovery, barcode cooldown helpers, Manual Search provider-outage and offline-queue recovery, manual-search and barcode accessible labels/states, Home logging-hub rendering, custom-food manual label-review gating, manual-search sticky layout, manual selected-food portion/log controls, Saved Foods filtering/source actions, Meal Builder search/add/portion/save behavior, Recipe Library edit/log actions, Natural Entry parsing/selection/logging, progress graph/day selection/month navigation, saved-food presentation, profile presentation, Profile US/metric unit switching, and floating-tab configuration exist. A path-scoped Android Maestro workflow uses a production-contract fixture provider and fixture camera input to cover manual logging, barcode no-match recovery/successful logging, provider-outage search recovery, camera confirmation, Meal Builder, custom-food logging, saved-meal editing/deletion, account-scoped SQLite queue replay, and typed local-profile deletion. It runs for relevant pull requests and `main` changes, verifies API and Metro readiness, and uploads service/Android diagnostics when it fails. The queue fixture is compiled only into the dedicated test build and validates the real replay/idempotency path; automatic transport-failure queuing remains a unit-tested branch, not device coverage. Local profile deletion does not delete a managed Clerk identity. Fixture modes are rejected by production API configuration. CI also runs high-severity production Node auditing, third-party Python auditing, PostgreSQL migration application, API container build/scanning, and CodeQL. Backend covers unauthenticated camera-analysis rejection and two-account resource isolation for meal/recipe detail, mutations, and collections; nested analysis-job confirmation cannot create a cross-account meal; date-keyed weight/hydration updates; custom-food detail/list/mutations/favorites/reports; saved-food links; diary/range insights; report history; goals; preferences; session revocation; and exports. [[architecture/authorization-boundaries|Authorization Boundaries]] records the current route inventory. The Android workflow has not yet completed its first hosted-emulator validation, while systematic BOLA coverage for every owner-scoped endpoint and broader mobile navigation/accessibility/device coverage remain incomplete.
+Description: Backend tests, mobile typecheck, and initial mobile Jest coverage for the food provenance screen, saved-meal source fallback, food provenance presentation, saved-meal portion/replacement/addition/removal save behavior, camera capture/import recovery, camera confirmation save blocking and multi-view payload/snapshot behavior, multi-angle capture bounds, barcode no-match screen recovery, barcode cooldown helpers, Manual Search provider-outage and offline-queue recovery, manual-search and barcode accessible labels/states, Home logging-hub rendering, custom-food manual label-review gating, manual-search sticky layout, manual selected-food portion/log controls, Saved Foods filtering/source actions, Meal Builder search/add/portion/save behavior, Recipe Library edit/log actions, Natural Entry parsing/selection/logging, progress graph/day selection/month navigation, saved-food presentation, profile presentation, Profile US/metric unit switching, and floating-tab configuration exist. The Android Maestro workflow uses a production-contract fixture provider and fixture camera input to cover manual logging, barcode no-match recovery/successful logging, provider-outage search recovery, camera confirmation, Meal Builder, custom-food logging, saved-meal editing/deletion, account-scoped SQLite queue replay, and typed local-profile deletion. It is manual-only while the hosted emulator remains unproven, verifies API and Metro readiness, and uploads service/Android diagnostics when it fails. The queue fixture is compiled only into the dedicated test build and validates the real replay/idempotency path; automatic transport-failure queuing remains a unit-tested branch, not device coverage. Local profile deletion does not delete a managed Clerk identity. Fixture modes are rejected by production API configuration. CI also runs high-severity production Node auditing, third-party Python auditing, PostgreSQL migration application, API container build/scanning, and CodeQL. Backend two-account regression coverage now exercises the documented owner-bound resources: meals and retained images, analysis-job status/cancellation/confirmation, recipes, custom foods, favorites/recents, correction reports, goals, preferences, weight, hydration, diary/insights, sessions, and exports. [[architecture/authorization-boundaries|Authorization Boundaries]] records the route inventory and required test pattern for every future owner-scoped route. Broader mobile navigation, accessibility, and physical-device coverage remain incomplete.
 
 User or engineering impact: Phone-only regressions in barcode, camera, keyboard, and meal logging flows can slip through.
 
+**Update 2026-07-21:** Saved-meal editor coverage now includes duplicating a source-backed item, splitting it into two linked editable portions, persisting an explicitly reordered multi-food meal, retaining confirmed added oil separately from a legacy source snapshot during portion edits, and persisting preparation/added-oil corrections. Broader mobile navigation, accessibility, physical-device coverage, and the hosted Android emulator remain incomplete.
+
 Recommended resolution: Record and investigate the first hosted Android-emulator run, then mark the existing path-scoped workflow as a required branch-protection check if it remains stable. Add deterministic device fixtures for Clerk sign-in/recovery/deletion, true offline/reconnect, and custom-food editing. Camera-permission recovery now uses the real denied/ungranted camera screen and its Manual Search fallback. Rate-limit recovery uses a fixture-only `429` that reproduces the production envelope and retry header without sharing mutable capacity across smoke flows. A durable queue now supports confirmed Manual Search, Barcode, Natural Entry, Meal Builder, Camera Confirmation, and already-saved Custom Food meal snapshots; it intentionally excludes camera images/new analysis requests, custom-food creation, automatic retry policy, and conflict handling.
+
+## Daily Diary React Query test timing warning
+
+Severity: Low
+
+Status: Resolved 2026-07-21
+
+Affected area: Mobile Jest test harness, Daily Diary
+
+Description: The previous-day navigation test finished immediately after starting its second TanStack Query request, which allowed the query notification to update after the test boundary. The test now waits for the rendered previous-day empty state before completing.
+
+User or engineering impact: No runtime behavior changed. Full mobile test output is clear enough to expose future asynchronous test-sequencing regressions.
+
+Recommended resolution: Keep date-navigation tests anchored to the resulting rendered query state. Do not globally suppress `console.error`.
 
 ## React Native test-harness warning in Custom Food query loading
 
@@ -373,6 +389,8 @@ Affected area: Mobile design system, accessibility, product completeness
 Description: The current mobile app now has a shared material system, Expo Blur-backed glass surfaces with runtime opaque reduced-transparency fallbacks, a semantic light/dark palette, root ThemeProvider, persisted `system`/`light`/`dark` user preference, theme-aware shared materials/macro ring/navigation, a configured native light/dark leaf-mark splash plus a branded structural in-app launch state, Onboarding and Profile appearance controls, a dedicated Accessibility route that reads and subscribes to device text-scale, reduced-motion, reduced-transparency, and screen-reader status without pretending to override it, theme-aware Today, daily nutrient detail, Progress, Manual Search, Barcode, Saved Foods, Meal Builder, Custom Food, Recipe Library, Natural Entry, the complete food-provenance route, saved-meal detail editor, the core Meal Confirmation review/replacement/add-on flow, and a read-only Premium preview that clearly separates current free tools from planned membership directions. Camera can optionally pass a known 25 cm, 28 cm, or 30 cm visible round-plate cue into review, but it remains a visual prompt rather than a calibration or precision claim. Barcode, Food Detail, Manual Search, saved-meal detail, Recipe Library, Progress date-range controls, and daily nutrient detail have deterministic dark-palette regression tests for key actions, placeholders, selections, and saved-data emphasis. Camera capture labels manual alternatives and explains the limitation of one or multiple photographs; Meal Confirmation labels correction, provider-search, report, and add-on controls with accessible expandable states/input hints and meets the 44px minimum for those compact review actions. Saved Foods filter/sort, Profile unit/direction, onboarding logging/camera settings, Meal Builder category choices, and Natural Entry source-record choices now expose selected-state semantics; Meal Builder time presets and destructive recipe/meal actions include clear spoken context, and all of those compact controls meet the 44px target. The daily nutrient-detail route displays saved calories, macros, fiber, sugar, sodium, user-configured targets, and meal contributions without inferring medical targets. Meal Confirmation's inputs, candidate selectors, source/report actions, warning and destructive controls, and selected accessibility states now use semantic palette values. Premium Today/Scan/Review/Search/Progress core flows, a five-destination floating navigation, reduced-motion-safe camera and macro-ring behavior, visible source/confidence language, locally persisted onboarding goal framing, explicitly accepted nutrition targets, logging/dietary preferences, and a source-backed Meal Builder with duplicate plus accessible persisted reordering and reusable recipe save/edit/log/delete also exist. The optional onboarding target is a disclosed general-wellness estimate and not medical advice. Dietary preferences are currently reference-only: they do not filter provider records or verify ingredients/allergens. The backend now has a pre-billing entitlement guard, but the app still has no purchases, billing-provider integration, customer-facing quota management, or entitlement UX. Several remaining feature-local styles, a full dynamic-type and VoiceOver audit, dietary-aware provider filtering with reliable validation, richer recipe organization, connected services, offline flow, and the remaining screen inventory are not implemented.
 
 Update 2026-07-14: The earlier reference to missing drag reordering is superseded. Meal Builder now reorders live as its drag handle crosses item boundaries, provides selection feedback, and keeps explicit move-up/move-down controls for screen readers and reduced-motion users. Richer physics-based list layout animation remains a refinement, not a missing basic interaction.
+
+Update 2026-07-22: Recipe Library now supports local ingredient-aware search, meal-time/folder filtering, recent/use/name sorting, an owner-scoped favorite flag, account-private tags, and one owner-scoped folder per recipe. Users can add/remove favorites; create, rename, assign, unfile, and safely delete folders; and filter favorites without changing snapshots or logged meals. Server-side search/pagination, shared collections, and richer future-log reuse controls remain incomplete.
 
 User or engineering impact: The core experience is more coherent and premium, but the product should not be represented as a complete adaptive premium app across every requested screen or accessibility preference yet.
 

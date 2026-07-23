@@ -218,6 +218,12 @@ describe("MealConfirmationScreen", () => {
             identityConfirmed: true,
             preparationMethod: "grilled",
             confirmedGrams: 145,
+            nutrientsPer100g: expect.objectContaining({
+              caloriesKcal: expect.any(Number),
+              proteinGrams: expect.any(Number),
+              carbohydrateGrams: expect.any(Number),
+              fatGrams: expect.any(Number),
+            }),
             addOns: [
               {
                 displayName: "Ranch dressing",

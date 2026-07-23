@@ -1,7 +1,7 @@
 from datetime import date, datetime, timezone
 from enum import StrEnum
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from app.nutrition.food_quality import assess_food_quality
 from app.schemas.common import ApiModel, ConfidenceTier, NutrientsPer100g
@@ -67,6 +67,7 @@ class FoodSearchResult(ApiModel):
     quality_assessment: FoodQualityAssessment | None = None
     source_reference: str
     retrieved_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    saved_tags: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def populate_quality_assessment(self) -> "FoodSearchResult":
@@ -82,6 +83,30 @@ class FoodSearchResult(ApiModel):
 
 class FoodSearchResponse(ApiModel):
     items: list[FoodSearchResult]
+
+
+class FavoriteFoodTagsUpdate(ApiModel):
+    tags: list[str] = Field(default_factory=list, max_length=10)
+
+    @field_validator("tags")
+    @classmethod
+    def normalize_tags(cls, tags: list[str]) -> list[str]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+
+        for tag in tags:
+            cleaned = tag.strip()
+            if not cleaned:
+                raise ValueError("Tags cannot be empty.")
+            if len(cleaned) > 48:
+                raise ValueError("Tags must be 48 characters or fewer.")
+
+            key = cleaned.casefold()
+            if key not in seen:
+                seen.add(key)
+                normalized.append(cleaned)
+
+        return normalized
 
 
 class FoodServingOption(ApiModel):

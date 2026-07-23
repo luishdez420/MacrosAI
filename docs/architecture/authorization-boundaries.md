@@ -1,6 +1,6 @@
 # Authorization Boundaries
 
-Last updated: 2026-07-21
+Last updated: 2026-07-22
 
 Related: [[Architecture]], [[Current State]], [[Known Issues]], [[../api/endpoints|API Endpoints]].
 
@@ -20,11 +20,9 @@ the source of truth.
   records a minimal `authorization.owner_access_denied` event without the
   requested ID, request body, or resource payload.
 - User-created records are private and must never enter shared provider
-  search/cache paths. Global USDA and Open Food Facts catalog data is shared:
-  the current text-search endpoint is unauthenticated, while barcode lookup
-  and food detail require a signed-in user. This is an intentional inventory
-  distinction, not a claim that public provider search has a production abuse
-  policy.
+  search/cache paths. Global USDA and Open Food Facts catalog data is shared
+  between signed-in accounts: text search, barcode lookup, and food detail all
+  require a signed-in user.
 - Date-keyed user values (weight and hydration) are scoped by `(user_id,
   logged_on)`. A delete for another account's date is an idempotent no-op;
   it cannot affect the owner's value.
@@ -39,9 +37,9 @@ the source of truth.
 | Meals and meal images | `/meals`, `/meals/{id}`, meal-image access/delete | `Meal.user_id` is in every detail/mutation query; image access also verifies the image belongs to that owned meal. | Two-account read/update/delete/list and image access/delete tests. |
 | Meal confirmation from camera analysis | `POST /meals` with `analysisJobId` | The review job is resolved by `AnalysisJob.id`, owner, `needs_review` status, and expiry before idempotency or meal writes begin. | Two-account confirmation test proves a `404`, minimal audit event, intact owner job, and no created attacker meal. |
 | Analysis jobs | `/meal-analysis/jobs`, `/meal-analysis/{id}` | Create/read/cancel are authenticated; status/cancel lookups include `AnalysisJob.user_id`. | Owner status/cancel denial coverage, plus job lifecycle tests. |
-| Recipes | `/recipes`, `/recipes/{id}`, `/recipes/{id}/log` | `Recipe.user_id` is included in collection/detail/mutation queries. | Two-account read/update/delete/log/list coverage. |
+| Recipes, private recipe favorites, and private recipe folders | `/recipes`, `/recipes/{id}`, `/recipes/{id}/log`, `/recipes/folders`, `/recipes/folders/{id}` | Recipe queries include `Recipe.user_id`; the favorite flag is an owner-scoped recipe field; folder lookups include `RecipeFolder.user_id`, and deleting a folder updates only that owner's recipe links before removal. | Two-account recipe read/update/delete/log/list coverage, including a cross-account favorite update, plus folder list/update/delete denial coverage. |
 | Custom foods | `/foods/custom`, `/foods/{id}`, `/foods/custom/{id}` | `CustomFood.user_id` joins are required for detail, edit, delete, barcode resolution, and provider fallback. | Two-account detail/edit/delete/list coverage. |
-| Favorites and recents | `/foods/favorites`, `/foods/recent` | Link-table lookups include `FavoriteFood.user_id` or `RecentFood.user_id`. | Two-account add/remove/list coverage. |
+| Favorites, private tags, and recents | `/foods/favorites`, `/foods/favorites/{foodId}/tags`, `/foods/recent` | Favorite and recent link-table lookups include the current user. Tag updates first resolve the current user's `FavoriteFood`; tags and assignments are user-owned and never attach to source records. | Two-account add/remove/list and favorite-tag update coverage. |
 | Source correction reports | `/foods/{id}/correction-reports`, `/correction-reports` | Private custom records must be owned before a report can reference them; history filters `DataCorrectionReport.user_id`. | Two-account report/history coverage. |
 | Goals and preferences | `/goals`, `/goals/history`, `/preferences` | Reads and upserts use the current user's rows. | Separate accounts receive independent values. |
 | Weight and hydration | `/weight`, `/hydration/{date}` | Queries and upserts constrain `user_id` and date. | Same-date two-account write/delete/read coverage. |
@@ -51,9 +49,8 @@ the source of truth.
 
 ## Explicitly Shared Or Separate Scopes
 
-- `GET /foods/search` is currently an unauthenticated shared-provider catalog
-  search. It never returns user-created records. Its public-access and abuse
-  policy must be revisited before production release.
+- `GET /foods/search` is an authenticated shared-provider catalog search. It
+  never returns user-created records; those remain owner-scoped.
 - USDA/Open Food Facts detail and barcode lookup are shared provider data but
   currently require a signed-in user. `provider=user` records remain private
   to their owner.

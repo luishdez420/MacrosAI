@@ -2,6 +2,7 @@ import calendar
 from datetime import UTC, date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.v1.diary_routes import round_totals
@@ -10,9 +11,11 @@ from app.api.v1.meal_routes import day_bounds, meal_query
 from app.core.auth import CurrentUser, ensure_current_user
 from app.db.session import get_db
 from app.models.meal import Meal
+from app.models.user import NutritionGoal, WeightEntry
 from app.schemas.insights import (
     MonthlyInsightsRead,
     RangeInsightsRead,
+    WeightComparisonRead,
     WeeklyInsightDay,
     WeeklyInsightsRead,
 )
@@ -95,6 +98,7 @@ def get_range_insights(
     days = build_insight_days(db, current_user.id, start_date, end_date)
     summary = summarize_days(days)
     calorie_target = calorie_target_for_date(db, current_user.id, end_date)
+    effective_goals = goals_by_date(db, current_user.id, start_date, end_date)
 
     return RangeInsightsRead(
         start_date=start_date.isoformat(),
@@ -106,6 +110,13 @@ def get_range_insights(
         average_calories=summary.average_calories,
         average_protein_grams=summary.average_protein_grams,
         average_fiber_grams=summary.average_fiber_grams,
+        weight_comparison=build_weight_comparison(
+            db,
+            current_user.id,
+            start_date,
+            end_date,
+            effective_goals=effective_goals,
+        ),
         days=days,
     )
 
@@ -203,6 +214,79 @@ def insight_date_for_meal(logged_at: datetime) -> date:
 def calorie_target_for_date(db: Session, user_id: str, target_date: date) -> float:
     goal = goal_for_date(db, user_id, target_date)
     return goal.calories_kcal if goal else fallback_calorie_goal
+
+
+def build_weight_comparison(
+    db: Session,
+    user_id: str,
+    start_date: date,
+    end_date: date,
+    *,
+    effective_goals: dict[date, NutritionGoal],
+) -> WeightComparisonRead:
+    """Describe saved weight observations and their effective-goal context.
+
+    Three entries spanning at least seven days are the minimum for an
+    ``observed`` pattern. Shorter or sparser data remains visible as
+    ``limited`` so the client can present it without overstating certainty.
+    """
+
+    entries = db.scalars(
+        select(WeightEntry)
+        .where(
+            WeightEntry.user_id == user_id,
+            WeightEntry.logged_on >= start_date,
+            WeightEntry.logged_on <= end_date,
+        )
+        .order_by(WeightEntry.logged_on.asc(), WeightEntry.created_at.asc())
+    ).all()
+
+    unique_goal_ids = {goal.id for goal in effective_goals.values()}
+    goal_directions = sorted(
+        {
+            goal.goal_direction
+            for goal in effective_goals.values()
+            if goal.goal_direction in {"maintain", "cut", "gain"}
+        }
+    )
+    direction_context = (
+        "unavailable"
+        if not goal_directions
+        else "consistent"
+        if len(goal_directions) == 1
+        else "changed"
+    )
+
+    if len(entries) < 2:
+        return WeightComparisonRead(
+            status="insufficient_data",
+            trend="unavailable",
+            entry_count=len(entries),
+            goal_direction_context=direction_context,
+            goal_directions=goal_directions,
+            goal_revision_count=len(unique_goal_ids),
+        )
+
+    first_entry = entries[0]
+    last_entry = entries[-1]
+    observation_days = (last_entry.logged_on - first_entry.logged_on).days
+    change_grams = round(last_entry.weight_grams - first_entry.weight_grams, 1)
+    # Display-noise guard only; this is not a health or clinical threshold.
+    trend = "steady" if abs(change_grams) <= 200 else "up" if change_grams > 0 else "down"
+    status_value = "observed" if len(entries) >= 3 and observation_days >= 7 else "limited"
+
+    return WeightComparisonRead(
+        status=status_value,
+        trend=trend,
+        entry_count=len(entries),
+        first_logged_on=first_entry.logged_on,
+        last_logged_on=last_entry.logged_on,
+        observation_days=observation_days,
+        change_grams=change_grams,
+        goal_direction_context=direction_context,
+        goal_directions=goal_directions,
+        goal_revision_count=len(unique_goal_ids),
+    )
 
 
 def month_start(month: str | None) -> date:

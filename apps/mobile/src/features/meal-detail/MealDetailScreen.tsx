@@ -17,6 +17,7 @@ import {
 
 import { colors, radii, spacing, typography, type ThemePalette } from "@living-nutrition/design-tokens";
 import type { FoodSearchResult, MealItemRead, MealRead, NutrientPer100g } from "@living-nutrition/shared-types";
+import { ApiClientError } from "@living-nutrition/api-client";
 import { api } from "../../services/api";
 import {
   ActionButton,
@@ -36,14 +37,20 @@ import {
   buildEditedMealItem,
   buildAddedMealDraft,
   buildAddedMealItem,
+  buildDuplicatedMealDraft,
+  buildSplitMealDraft,
   buildReplacementMealItem,
   formatPortionNutrientRows,
   getNutrientsPer100gFromSnapshot,
+  addAddedOilNutrients,
   parsePositiveNumber,
   roundNumber,
   scaleNutrients,
+  withSplitSnapshotContext,
 } from "./mealEditing";
 import { combineLocalDateAndTime, dateForLoggedAt, timeForLoggedAt } from "../../shared/domain/mealTiming";
+
+const preparationOptions = ["not_sure", "raw", "grilled", "baked", "fried", "boiled", "steamed"] as const;
 
 export function MealDetailScreen() {
   const router = useRouter();
@@ -53,13 +60,20 @@ export function MealDetailScreen() {
   const params = useLocalSearchParams<{ id?: string }>();
   const mealId = Array.isArray(params.id) ? params.id[0] : params.id;
   const [gramsByItemId, setGramsByItemId] = useState<Record<string, string>>({});
+  const [addedOilGramsByItemId, setAddedOilGramsByItemId] = useState<Record<string, number>>({});
+  const [preparationByItemId, setPreparationByItemId] = useState<Record<string, string | null>>({});
   const [replacementsByItemId, setReplacementsByItemId] = useState<Record<string, FoodSearchResult>>({});
   const [addedItems, setAddedItems] = useState<Array<{ item: MealItemRead; food: FoodSearchResult }>>([]);
+  const [duplicatedItems, setDuplicatedItems] = useState<MealItemRead[]>([]);
+  const [splitItems, setSplitItems] = useState<MealItemRead[]>([]);
+  const [splitGroupsBySourceItemId, setSplitGroupsBySourceItemId] = useState<Record<string, string>>({});
   const [removedItemIds, setRemovedItemIds] = useState<string[]>([]);
+  const [itemOrder, setItemOrder] = useState<string[]>([]);
   const [mealDate, setMealDate] = useState("");
   const [mealTime, setMealTime] = useState("");
   const [timeError, setTimeError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [editConflict, setEditConflict] = useState(false);
   const [deleteConfirmationOpen, setDeleteConfirmationOpen] = useState(false);
   const [completion, setCompletion] = useState<"updated" | "deleted" | null>(null);
   const meal = useQuery({
@@ -69,31 +83,50 @@ export function MealDetailScreen() {
   });
   const updateMutation = useMutation({
     mutationFn: ({ updatedMeal, loggedAt }: { updatedMeal: MealRead; loggedAt: string }) =>
-      api.updateMeal(updatedMeal.id, {
-        name: updatedMeal.name,
-        mealType: updatedMeal.mealType,
-        loggedAt,
-        notes: updatedMeal.notes,
-        items: editableItems.map((item) => {
-          const grams = parsePositiveNumber(gramsByItemId[item.id]) || item.consumedGrams;
-          const replacement = replacementsByItemId[item.id];
-          const addedItem = addedItems.find((candidate) => candidate.item.id === item.id);
-          if (addedItem) {
-            return buildAddedMealItem(replacement ?? addedItem.food, grams);
-          }
-          return replacement
-            ? buildReplacementMealItem(item, replacement, grams)
-            : buildEditedMealItem(item, grams);
-        }),
-      }),
+      api.updateMeal(
+        updatedMeal.id,
+        {
+          name: updatedMeal.name,
+          mealType: updatedMeal.mealType,
+          loggedAt,
+          notes: updatedMeal.notes,
+          items: editableItems.map((item) => {
+            const grams = parsePositiveNumber(gramsByItemId[item.id]) || item.consumedGrams;
+            const addedOilGrams = addedOilGramsByItemId[item.id] ?? item.addedOilGrams;
+            const preparationMethod = preparationByItemId[item.id] ?? item.preparationMethod;
+            const replacement = replacementsByItemId[item.id];
+            const addedItem = addedItems.find((candidate) => candidate.item.id === item.id);
+            if (addedItem) {
+              return buildAddedMealItem(replacement ?? addedItem.food, grams, addedOilGrams, preparationMethod);
+            }
+            const updatedItem = replacement
+              ? buildReplacementMealItem(item, replacement, grams, addedOilGrams, preparationMethod)
+              : buildEditedMealItem(item, grams, addedOilGrams, preparationMethod);
+            const splitSourceGroupId = splitGroupsBySourceItemId[item.id];
+            const splitGroupId = splitSourceGroupId ?? splitGroupIdFromItem(item);
+            return splitGroupId
+              ? withSplitSnapshotContext(updatedItem, splitGroupId, splitSourceGroupId ? "source" : "portion")
+              : updatedItem;
+          }),
+        },
+        { revision: updatedMeal.revision }
+      ),
     onSuccess: async (updatedMeal) => {
       await queryClient.invalidateQueries({ queryKey: ["diary"] });
       await queryClient.invalidateQueries({ queryKey: ["meal", updatedMeal.id] });
       setActionError(null);
+      setEditConflict(false);
       setCompletion("updated");
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => undefined);
     },
-    onError: (error) => setActionError(error.message),
+    onError: (error) => {
+      if (isMealEditConflict(error)) {
+        setEditConflict(true);
+        setActionError(null);
+        return;
+      }
+      setActionError(error.message);
+    },
   });
   const deleteMutation = useMutation({
     mutationFn: (id: string) => api.deleteMeal(id),
@@ -124,19 +157,36 @@ export function MealDetailScreen() {
     setGramsByItemId(
       Object.fromEntries(meal.data.items.map((item) => [item.id, String(roundNumber(item.consumedGrams))]))
     );
+    setAddedOilGramsByItemId(
+      Object.fromEntries(meal.data.items.map((item) => [item.id, item.addedOilGrams]))
+    );
+    setPreparationByItemId(
+      Object.fromEntries(
+        meal.data.items.map((item) => [item.id, item.preparationMethod ?? null])
+      ) as Record<string, string | null>
+    );
     setMealDate(dateForLoggedAt(meal.data.loggedAt));
     setMealTime(timeForLoggedAt(meal.data.loggedAt));
     setTimeError(null);
     setReplacementsByItemId({});
     setAddedItems([]);
+    setDuplicatedItems([]);
+    setSplitItems([]);
+    setSplitGroupsBySourceItemId({});
     setRemovedItemIds([]);
+    setItemOrder(meal.data.items.map((item) => item.id));
   }, [meal.data]);
 
   const editableItems = meal.data
-    ? [
-        ...meal.data.items.filter((item) => !removedItemIds.includes(item.id)),
-        ...addedItems.map(({ item }) => item),
-      ]
+    ? orderMealItems(
+        [
+          ...meal.data.items.filter((item) => !removedItemIds.includes(item.id)),
+          ...addedItems.map(({ item }) => item),
+          ...duplicatedItems,
+          ...splitItems,
+        ],
+        itemOrder
+      )
     : [];
 
   function saveMeal() {
@@ -159,6 +209,12 @@ export function MealDetailScreen() {
     updateMutation.mutate({ updatedMeal: meal.data, loggedAt });
   }
 
+  async function reloadAfterEditConflict() {
+    setEditConflict(false);
+    setActionError(null);
+    await queryClient.invalidateQueries({ queryKey: ["meal", mealId] });
+  }
+
   function requestDelete() {
     if (!meal.data) {
       return;
@@ -172,8 +228,86 @@ export function MealDetailScreen() {
     const id = `draft-added-food-${Date.now()}-${addedItems.length}`;
     const item = buildAddedMealDraft(food, id);
     setAddedItems((current) => [...current, { item, food }]);
+    setItemOrder((current) => [...current, id]);
     setGramsByItemId((current) => ({ ...current, [id]: String(item.consumedGrams) }));
+    setAddedOilGramsByItemId((current) => ({ ...current, [id]: 0 }));
+    setPreparationByItemId((current) => ({ ...current, [id]: null }));
     setActionError(null);
+  }
+
+  function duplicateFood(item: MealItemRead) {
+    const id = `draft-duplicate-food-${Date.now()}-${duplicatedItems.length}`;
+    const grams = parsePositiveNumber(gramsByItemId[item.id]) || item.consumedGrams;
+    const duplicate = buildDuplicatedMealDraft(item, id, grams);
+
+    setDuplicatedItems((current) => [...current, duplicate]);
+    setItemOrder((current) => insertItemAfter(current, id, item.id));
+    setGramsByItemId((current) => ({ ...current, [id]: String(roundNumber(grams)) }));
+    setAddedOilGramsByItemId((current) => ({
+      ...current,
+      [id]: current[item.id] ?? item.addedOilGrams,
+    }));
+    setPreparationByItemId((current) => ({
+      ...current,
+      [id]: current[item.id] ?? item.preparationMethod ?? null,
+    }));
+    setActionError(null);
+  }
+
+  function splitFood(item: MealItemRead) {
+    if (splitGroupsBySourceItemId[item.id]) {
+      return;
+    }
+
+    const sourceGrams = parsePositiveNumber(gramsByItemId[item.id]) || item.consumedGrams;
+    const sourceOilGrams = addedOilGramsByItemId[item.id] ?? item.addedOilGrams;
+    const sourcePortionGrams = sourceGrams / 2;
+    const splitPortionGrams = sourceGrams - sourcePortionGrams;
+    const id = `draft-split-food-${Date.now()}-${splitItems.length}`;
+    const splitGroupId = `split-${Date.now()}-${item.id}`;
+    const splitItem = buildSplitMealDraft(item, id, splitPortionGrams, splitGroupId);
+
+    setSplitItems((current) => [...current, splitItem]);
+    setSplitGroupsBySourceItemId((current) => ({ ...current, [item.id]: splitGroupId }));
+    setItemOrder((current) => insertItemAfter(current, id, item.id));
+    setGramsByItemId((current) => ({
+      ...current,
+      [item.id]: String(roundNumber(sourcePortionGrams)),
+      [id]: String(roundNumber(splitPortionGrams)),
+    }));
+    setAddedOilGramsByItemId((current) => ({
+      ...current,
+      [item.id]: sourceOilGrams / 2,
+      [id]: sourceOilGrams - sourceOilGrams / 2,
+    }));
+    setPreparationByItemId((current) => ({
+      ...current,
+      [id]: current[item.id] ?? item.preparationMethod ?? null,
+    }));
+    setActionError(null);
+  }
+
+  function moveFood(itemId: string, direction: "earlier" | "later") {
+    const visibleItemIds = editableItems.map((item) => item.id);
+    const currentIndex = visibleItemIds.indexOf(itemId);
+    const targetIndex = currentIndex + (direction === "earlier" ? -1 : 1);
+
+    if (currentIndex < 0 || targetIndex < 0 || targetIndex >= visibleItemIds.length) {
+      return;
+    }
+
+    const targetItemId = visibleItemIds[targetIndex];
+    setItemOrder((current) =>
+      current.map((id) => {
+        if (id === itemId) {
+          return targetItemId;
+        }
+        if (id === targetItemId) {
+          return itemId;
+        }
+        return id;
+      })
+    );
   }
 
   function removeFood(item: MealItemRead) {
@@ -184,11 +318,39 @@ export function MealDetailScreen() {
 
     if (addedItems.some((candidate) => candidate.item.id === item.id)) {
       setAddedItems((current) => current.filter((candidate) => candidate.item.id !== item.id));
+      setItemOrder((current) => current.filter((id) => id !== item.id));
+    } else if (duplicatedItems.some((candidate) => candidate.id === item.id)) {
+      setDuplicatedItems((current) => current.filter((candidate) => candidate.id !== item.id));
+      setItemOrder((current) => current.filter((id) => id !== item.id));
+    } else if (splitItems.some((candidate) => candidate.id === item.id)) {
+      const splitGroupId = splitGroupIdFromItem(item);
+      setSplitItems((current) => current.filter((candidate) => candidate.id !== item.id));
+      setItemOrder((current) => current.filter((id) => id !== item.id));
+      if (splitGroupId) {
+        setSplitGroupsBySourceItemId((current) =>
+          Object.fromEntries(Object.entries(current).filter(([, groupId]) => groupId !== splitGroupId))
+        );
+      }
     } else {
       setRemovedItemIds((current) => [...current, item.id]);
+      setSplitGroupsBySourceItemId((current) => {
+        const next = { ...current };
+        delete next[item.id];
+        return next;
+      });
     }
 
     setReplacementsByItemId((current) => {
+      const next = { ...current };
+      delete next[item.id];
+      return next;
+    });
+    setAddedOilGramsByItemId((current) => {
+      const next = { ...current };
+      delete next[item.id];
+      return next;
+    });
+    setPreparationByItemId((current) => {
       const next = { ...current };
       delete next[item.id];
       return next;
@@ -200,7 +362,7 @@ export function MealDetailScreen() {
   }
 
   const adjustedTotals = meal.data
-    ? totalsForMeal(editableItems, gramsByItemId, replacementsByItemId)
+    ? totalsForMeal(editableItems, gramsByItemId, addedOilGramsByItemId, replacementsByItemId)
     : emptyNutrients();
 
   if (completion) {
@@ -239,6 +401,21 @@ export function MealDetailScreen() {
               body={actionError}
               tone="danger"
               actions={[{ label: "Dismiss", onPress: () => setActionError(null), variant: "secondary" }]}
+            />
+          ) : null}
+
+          {editConflict ? (
+            <InlineNotice
+              title="This meal changed elsewhere"
+              body="Another device saved a newer version. To avoid overwriting it, reload the latest meal before editing again. Reloading discards the unsaved changes on this screen."
+              tone="warning"
+              actions={[
+                {
+                  label: meal.isFetching ? "Reloading..." : "Reload latest meal",
+                  onPress: () => void reloadAfterEditConflict(),
+                  disabled: meal.isFetching,
+                },
+              ]}
             />
           ) : null}
 
@@ -324,22 +501,36 @@ export function MealDetailScreen() {
           <FullNutritionBreakdown nutrients={adjustedTotals} />
 
           <View style={styles.panel}>
-            <SectionHeader title="Foods" meta="Add, replace, or remove before saving" />
+            <SectionHeader title="Foods" meta="Add, split, duplicate, reorder, replace, or remove before saving" />
             {meal.data ? <AddFoodControl onAddFood={addFood} /> : null}
-            {editableItems.map((item) => (
+            {editableItems.map((item, index) => (
               <MealItemEditor
                 key={item.id}
                 item={item}
                 mealId={mealId ?? ""}
                 grams={gramsByItemId[item.id] ?? String(roundNumber(item.consumedGrams))}
+                addedOilGrams={addedOilGramsByItemId[item.id] ?? item.addedOilGrams}
+                preparationMethod={preparationByItemId[item.id] ?? item.preparationMethod ?? null}
                 replacement={replacementsByItemId[item.id]}
                 isAdded={addedItems.some((candidate) => candidate.item.id === item.id)}
+                isDuplicate={duplicatedItems.some((candidate) => candidate.id === item.id)}
+                isSplitSource={Boolean(splitGroupsBySourceItemId[item.id])}
+                isSplitPortion={splitItems.some((candidate) => candidate.id === item.id)}
                 canRemove={editableItems.length > 1}
+                canMoveEarlier={index > 0}
+                canMoveLater={index < editableItems.length - 1}
+                canSplit={!splitGroupsBySourceItemId[item.id]}
                 onChangeGrams={(value) =>
                   setGramsByItemId((current) => ({
                     ...current,
                     [item.id]: value,
                   }))
+                }
+                onChangeAddedOilGrams={(value) =>
+                  setAddedOilGramsByItemId((current) => ({ ...current, [item.id]: value }))
+                }
+                onChangePreparationMethod={(value) =>
+                  setPreparationByItemId((current) => ({ ...current, [item.id]: value }))
                 }
                 onSelectReplacement={(replacement) =>
                   setReplacementsByItemId((current) => ({ ...current, [item.id]: replacement }))
@@ -351,6 +542,10 @@ export function MealDetailScreen() {
                     return next;
                   })
                 }
+                onDuplicate={() => duplicateFood(item)}
+                onSplit={() => splitFood(item)}
+                onMoveEarlier={() => moveFood(item.id, "earlier")}
+                onMoveLater={() => moveFood(item.id, "later")}
                 onRemove={() => removeFood(item)}
               />
             ))}
@@ -376,7 +571,7 @@ export function MealDetailScreen() {
               <ActionButton
                 label={updateMutation.isPending ? "Saving..." : "Save adjusted meal"}
                 onPress={saveMeal}
-                disabled={updateMutation.isPending}
+                disabled={updateMutation.isPending || editConflict}
               />
               <ActionButton
                 label={deleteMutation.isPending ? "Deleting..." : "Delete meal"}
@@ -410,6 +605,10 @@ export function MealDetailScreen() {
       </TouchableWithoutFeedback>
     </KeyboardAvoidingView>
   );
+}
+
+export function isMealEditConflict(error: Error): boolean {
+  return error instanceof ApiClientError && error.status === 409;
 }
 
 function MealDetailCompletionScreen({
@@ -480,23 +679,51 @@ function MealItemEditor({
   item,
   mealId,
   grams,
+  addedOilGrams,
+  preparationMethod,
   replacement,
   isAdded,
+  isDuplicate,
+  isSplitSource,
+  isSplitPortion,
   canRemove,
+  canMoveEarlier,
+  canMoveLater,
+  canSplit,
   onChangeGrams,
+  onChangeAddedOilGrams,
+  onChangePreparationMethod,
   onSelectReplacement,
   onClearReplacement,
+  onDuplicate,
+  onSplit,
+  onMoveEarlier,
+  onMoveLater,
   onRemove,
 }: {
   item: MealItemRead;
   mealId: string;
   grams: string;
+  addedOilGrams: number;
+  preparationMethod: string | null;
   replacement?: FoodSearchResult;
   isAdded: boolean;
+  isDuplicate: boolean;
+  isSplitSource: boolean;
+  isSplitPortion: boolean;
   canRemove: boolean;
+  canMoveEarlier: boolean;
+  canMoveLater: boolean;
+  canSplit: boolean;
   onChangeGrams: (value: string) => void;
+  onChangeAddedOilGrams: (value: number) => void;
+  onChangePreparationMethod: (value: string | null) => void;
   onSelectReplacement: (replacement: FoodSearchResult) => void;
   onClearReplacement: () => void;
+  onDuplicate: () => void;
+  onSplit: () => void;
+  onMoveEarlier: () => void;
+  onMoveLater: () => void;
   onRemove: () => void;
 }) {
   const { palette } = useTheme();
@@ -513,7 +740,7 @@ function MealItemEditor({
   const displayedProvider = replacement?.provider ?? item.sourceProvider;
   const displayedFoodId = replacement?.id ?? item.foodId;
   const nutrientsPer100g = replacement?.nutrientsPer100g ?? getNutrientsPer100gFromSnapshot(item);
-  const nutrients = scaleNutrients(nutrientsPer100g, consumedGrams);
+  const nutrients = addAddedOilNutrients(scaleNutrients(nutrientsPer100g, consumedGrams), addedOilGrams);
 
   function selectReplacement(food: FoodSearchResult) {
     onSelectReplacement(food);
@@ -528,7 +755,7 @@ function MealItemEditor({
           <Text style={[styles.itemTitle, themed.ink]}>{readableFoodName(displayedName)}</Text>
           <View style={styles.badgeRow}>
             <SourceBadge label={sourceLabel(displayedProvider)} tone={replacement ? "warning" : "success"} />
-            <StatusPill label={replacement ? "Replacement selected" : isAdded ? "Added" : item.userConfirmed ? "Confirmed" : "Needs confirmation"} tone={replacement || !item.userConfirmed ? "warning" : "success"} />
+            <StatusPill label={replacement ? "Replacement selected" : isAdded ? "Added" : isDuplicate ? "Duplicated" : isSplitSource ? "Split source" : isSplitPortion ? "Split portion" : item.userConfirmed ? "Confirmed" : "Needs confirmation"} tone={replacement || !item.userConfirmed ? "warning" : "success"} />
           </View>
         </View>
       </View>
@@ -553,11 +780,65 @@ function MealItemEditor({
         </View>
       </View>
 
+      <View style={styles.amountRow}>
+        <View style={styles.amountInputWrap}>
+          <Text style={[styles.inputLabel, themed.muted]}>Added oil (grams)</Text>
+          <TextInput
+            accessibilityLabel={`Added oil grams for ${readableFoodName(displayedName)}`}
+            accessibilityHint="Counts as 9 calories and 1 gram of fat for every gram entered."
+            style={[styles.amountInput, themed.input]}
+            value={String(roundNumber(addedOilGrams))}
+            onChangeText={(value) => onChangeAddedOilGrams(parseNonnegativeNumber(value))}
+            placeholder="0"
+            placeholderTextColor={palette.muted}
+            keyboardType="decimal-pad"
+            returnKeyType="done"
+            onSubmitEditing={Keyboard.dismiss}
+          />
+        </View>
+        <View style={[styles.servingHint, themed.subsurface]}>
+          <Text style={[styles.servingHintValue, themed.ink]}>{Math.round(addedOilGrams * 9)}</Text>
+          <Text style={[styles.servingHintLabel, themed.muted]}>oil kcal</Text>
+        </View>
+      </View>
+
+      <View style={styles.preparationEditor}>
+        <Text style={[styles.inputLabel, themed.muted]}>Preparation</Text>
+        <Text style={[styles.itemMeta, themed.muted]}>
+          This records the preparation you confirm. It does not change source nutrients by itself.
+        </Text>
+        <View style={styles.preparationChoices}>
+          {preparationOptions.map((option) => {
+            const selected = (preparationMethod ?? "not_sure") === option;
+            const label = option === "not_sure" ? "Not sure" : option[0].toUpperCase() + option.slice(1);
+            return (
+              <Pressable
+                key={option}
+                accessibilityRole="button"
+                accessibilityLabel={`Preparation: ${label}`}
+                accessibilityState={{ selected }}
+                onPress={() => onChangePreparationMethod(option === "not_sure" ? null : option)}
+                style={[styles.preparationChoice, themed.subsurface, selected ? themed.selectedPreparation : null]}
+              >
+                <Text style={[styles.preparationChoiceText, selected ? themed.onSelectedPreparation : themed.ink]}>
+                  {label}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+      </View>
+
         <Text style={[styles.itemMeta, themed.muted]}>
           {Math.round(nutrients.caloriesKcal)} kcal · {roundNumber(nutrients.proteinGrams)}g protein · {replacement
             ? "Recalculated from the selected record and grams entered."
             : item.confidence.explanation}
         </Text>
+      {addedOilGrams > 0 ? (
+        <Text style={[styles.itemMeta, themed.muted]}>
+          Includes {roundNumber(addedOilGrams)}g confirmed added oil ({Math.round(addedOilGrams * 9)} kcal).
+        </Text>
+      ) : null}
       {replacement ? (
         <InlineNotice
           title="Replacement ready to save"
@@ -566,28 +847,76 @@ function MealItemEditor({
           actions={[{ label: "Keep previous food", onPress: onClearReplacement, variant: "secondary" }]}
         />
       ) : null}
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel={`${replacementSearchOpen ? "Close" : "Search for a replacement for"} ${readableFoodName(displayedName)}`}
-        accessibilityState={{ expanded: replacementSearchOpen }}
-        onPress={() => setReplacementSearchOpen((current) => !current)}
-        style={[styles.replaceButton, themed.subsurface]}
-      >
-        <Ionicons name="search-outline" size={17} color={palette.actionText} />
-        <Text style={[styles.replaceButtonText, themed.actionText]}>{replacementSearchOpen ? "Close food search" : "Replace food"}</Text>
-      </Pressable>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel={`Remove ${readableFoodName(displayedName)} from this meal`}
-        accessibilityHint={canRemove ? "The change is not saved until you save this meal." : "A meal must have at least one food."}
-        accessibilityState={{ disabled: !canRemove }}
-        disabled={!canRemove}
-        onPress={onRemove}
-        style={[styles.removeButton, themed.removeButton, !canRemove ? styles.disabledButton : null]}
-      >
-        <Ionicons name="trash-outline" size={17} color={palette.dangerText} />
-        <Text style={[styles.removeButtonText, themed.dangerText]}>Remove food</Text>
-      </Pressable>
+      <View style={styles.itemActionRow}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`${replacementSearchOpen ? "Close" : "Search for a replacement for"} ${readableFoodName(displayedName)}`}
+          accessibilityState={{ expanded: replacementSearchOpen }}
+          onPress={() => setReplacementSearchOpen((current) => !current)}
+          style={[styles.replaceButton, themed.subsurface]}
+        >
+          <Ionicons name="search-outline" size={17} color={palette.actionText} />
+          <Text style={[styles.replaceButtonText, themed.actionText]}>{replacementSearchOpen ? "Close food search" : "Replace food"}</Text>
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Duplicate ${readableFoodName(displayedName)} in this meal`}
+          accessibilityHint="Creates an editable copy with the same saved nutrition source and grams. The change is not saved until you save this meal."
+          onPress={onDuplicate}
+          style={[styles.replaceButton, themed.subsurface]}
+        >
+          <Ionicons name="copy-outline" size={17} color={palette.actionText} />
+          <Text style={[styles.replaceButtonText, themed.actionText]}>Duplicate</Text>
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Split ${readableFoodName(displayedName)} into two portions`}
+          accessibilityHint={canSplit ? "Divides the current grams evenly into two editable portions. The change is not saved until you save this meal." : "This food is already the source of a split. Adjust the two portions or save before splitting it again."}
+          accessibilityState={{ disabled: !canSplit }}
+          disabled={!canSplit}
+          onPress={onSplit}
+          style={[styles.compactActionButton, themed.subsurface, !canSplit ? styles.disabledButton : null]}
+        >
+          <Ionicons name="git-branch-outline" size={17} color={palette.actionText} />
+          <Text style={[styles.replaceButtonText, themed.actionText]}>Split</Text>
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Move ${readableFoodName(displayedName)} earlier in this meal`}
+          accessibilityHint="Changes the meal item order when you save."
+          accessibilityState={{ disabled: !canMoveEarlier }}
+          disabled={!canMoveEarlier}
+          onPress={onMoveEarlier}
+          style={[styles.compactActionButton, themed.subsurface, !canMoveEarlier ? styles.disabledButton : null]}
+        >
+          <Ionicons name="arrow-up-outline" size={17} color={palette.actionText} />
+          <Text style={[styles.replaceButtonText, themed.actionText]}>Earlier</Text>
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Move ${readableFoodName(displayedName)} later in this meal`}
+          accessibilityHint="Changes the meal item order when you save."
+          accessibilityState={{ disabled: !canMoveLater }}
+          disabled={!canMoveLater}
+          onPress={onMoveLater}
+          style={[styles.compactActionButton, themed.subsurface, !canMoveLater ? styles.disabledButton : null]}
+        >
+          <Ionicons name="arrow-down-outline" size={17} color={palette.actionText} />
+          <Text style={[styles.replaceButtonText, themed.actionText]}>Later</Text>
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Remove ${readableFoodName(displayedName)} from this meal`}
+          accessibilityHint={canRemove ? "The change is not saved until you save this meal." : "A meal must have at least one food."}
+          accessibilityState={{ disabled: !canRemove }}
+          disabled={!canRemove}
+          onPress={onRemove}
+          style={[styles.removeButton, themed.removeButton, !canRemove ? styles.disabledButton : null]}
+        >
+          <Ionicons name="trash-outline" size={17} color={palette.dangerText} />
+          <Text style={[styles.removeButtonText, themed.dangerText]}>Remove food</Text>
+        </Pressable>
+      </View>
       {replacementSearchOpen ? (
         <View style={styles.replacementSearch}>
           <TextInput
@@ -724,11 +1053,15 @@ function AddFoodControl({ onAddFood }: { onAddFood: (food: FoodSearchResult) => 
 function totalsForMeal(
   items: MealItemRead[],
   gramsByItemId: Record<string, string>,
+  addedOilGramsByItemId: Record<string, number>,
   replacementsByItemId: Record<string, FoodSearchResult>
 ): NutrientPer100g {
   return items.reduce<NutrientPer100g>((total, item) => {
     const grams = parsePositiveNumber(gramsByItemId[item.id]) || item.consumedGrams;
-    const nutrients = scaleNutrients(replacementsByItemId[item.id]?.nutrientsPer100g ?? getNutrientsPer100gFromSnapshot(item), grams);
+    const nutrients = addAddedOilNutrients(
+      scaleNutrients(replacementsByItemId[item.id]?.nutrientsPer100g ?? getNutrientsPer100gFromSnapshot(item), grams),
+      addedOilGramsByItemId[item.id] ?? item.addedOilGrams
+    );
     return {
       caloriesKcal: total.caloriesKcal + nutrients.caloriesKcal,
       proteinGrams: total.proteinGrams + nutrients.proteinGrams,
@@ -739,6 +1072,35 @@ function totalsForMeal(
       sodiumMilligrams: (total.sodiumMilligrams ?? 0) + (nutrients.sodiumMilligrams ?? 0),
     };
   }, emptyNutrients());
+}
+
+function orderMealItems(items: MealItemRead[], itemOrder: string[]): MealItemRead[] {
+  const itemById = new Map(items.map((item) => [item.id, item]));
+  const orderedItems = itemOrder
+    .map((itemId) => itemById.get(itemId))
+    .filter((item): item is MealItemRead => Boolean(item));
+  const unorderedItems = items.filter((item) => !itemOrder.includes(item.id));
+
+  return [...orderedItems, ...unorderedItems];
+}
+
+function insertItemAfter(itemOrder: string[], itemId: string, anchorItemId: string): string[] {
+  const anchorIndex = itemOrder.indexOf(anchorItemId);
+  if (anchorIndex < 0) {
+    return [...itemOrder, itemId];
+  }
+
+  return [...itemOrder.slice(0, anchorIndex + 1), itemId, ...itemOrder.slice(anchorIndex + 1)];
+}
+
+function splitGroupIdFromItem(item: MealItemRead): string | null {
+  const value = item.nutrientSnapshotJson?.splitGroupId;
+  return typeof value === "string" && value ? value : null;
+}
+
+function parseNonnegativeNumber(value: string): number {
+  const parsed = Number(value.replace(",", "."));
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
 }
 
 function emptyNutrients(): NutrientPer100g {
@@ -759,6 +1121,8 @@ function mealDetailThemeStyles(palette: ThemePalette) {
     muted: { color: palette.muted },
     actionText: { color: palette.actionText },
     dangerText: { color: palette.dangerText },
+    selectedPreparation: { backgroundColor: colors.green },
+    onSelectedPreparation: { color: palette.onPrimary },
     removeButton: { borderColor: palette.dangerText },
     savedMark: { backgroundColor: palette.mode === "dark" ? colors.green : colors.greenDeep },
     deletedMark: { backgroundColor: palette.mode === "dark" ? colors.coral : colors.coral },
@@ -894,6 +1258,25 @@ const styles = StyleSheet.create({
     backgroundColor: colors.background,
     color: colors.ink,
   },
+  preparationEditor: {
+    gap: spacing.xs,
+  },
+  preparationChoices: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: spacing.xs,
+  },
+  preparationChoice: {
+    minHeight: 44,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: radii.pill,
+    paddingHorizontal: spacing.sm,
+  },
+  preparationChoiceText: {
+    ...typography.caption,
+    fontWeight: "800",
+  },
   servingHint: {
     minWidth: 88,
     minHeight: 52,
@@ -929,6 +1312,19 @@ const styles = StyleSheet.create({
   replaceButton: {
     minHeight: 44,
     alignSelf: "flex-start",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xs,
+    borderRadius: radii.pill,
+    paddingHorizontal: spacing.sm,
+  },
+  itemActionRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: spacing.xs,
+  },
+  compactActionButton: {
+    minHeight: 44,
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.xs,

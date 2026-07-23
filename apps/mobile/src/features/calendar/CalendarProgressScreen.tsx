@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 
 import { colors, radii, spacing, typography, type ThemePalette } from "@living-nutrition/design-tokens";
-import type { WeightEntry } from "@living-nutrition/shared-types";
+import type { RangeInsights } from "@living-nutrition/shared-types";
 import { api } from "../../services/api";
 import {
   Card,
@@ -69,12 +69,6 @@ export function CalendarProgressScreen() {
     queryFn: () => api.getPreferences(),
     retry: 1,
   });
-  const weightEntries = useQuery({
-    queryKey: ["weight", "progress"],
-    queryFn: () => api.listWeightEntries(365),
-    enabled: Boolean(rangeWindow),
-    retry: 1,
-  });
   const fallbackDays = buildDateRange(addDays(today, -6), today).map((day) => ({
     ...day,
     calories: 0,
@@ -114,11 +108,8 @@ export function CalendarProgressScreen() {
   const fiberLoggedDays = progressDays.filter((day) => day.hasLoggedMeals && day.fiberGrams > 0).length;
   const isCurrentMonth = selectedMonth === currentMonthKey();
   const weightInsight = buildWeightRangeInsight(
-    weightEntries.data ?? [],
-    rangeWindow?.startDate,
-    rangeWindow?.endDate,
-    preferences.data?.unitSystem ?? "metric",
-    preferences.data?.goalDirection ?? "maintain"
+    rangeInsights.data?.weightComparison,
+    preferences.data?.unitSystem ?? "metric"
   );
 
   return (
@@ -566,48 +557,65 @@ function loggingRhythmAccessibilityLabel(loggedDays: number, proteinLoggedDays: 
 }
 
 function buildWeightRangeInsight(
-  entries: WeightEntry[],
-  startDate: string | undefined,
-  endDate: string | undefined,
-  unitSystem: "us" | "metric",
-  direction: "maintain" | "cut" | "gain"
+  comparison: RangeInsights["weightComparison"] | undefined,
+  unitSystem: "us" | "metric"
 ) {
-  const periodEntries = entries
-    .filter((entry) => (!startDate || entry.loggedOn >= startDate) && (!endDate || entry.loggedOn <= endDate))
-    .sort((left, right) => left.loggedOn.localeCompare(right.loggedOn));
-
-  if (periodEntries.length < 2) {
+  if (!comparison) {
     return {
-      title: "Add two check-ins to reveal your trend.",
-      body: "Weight is optional. When you choose to log it, this view will describe the pattern alongside your selected goal direction.",
+      title: "Weight pattern is loading.",
+      body: "Weight is optional. This selected-period comparison will show the check-ins and goal context it used.",
     };
   }
 
-  const first = periodEntries[0];
-  const last = periodEntries.at(-1);
-  if (!first || !last) {
-    return { title: "Weight trend unavailable", body: "Add another check-in whenever it feels useful." };
+  if (comparison.status === "insufficient_data") {
+    const checkInCopy = comparison.entryCount === 1 ? "one check-in" : "fewer than two check-ins";
+    return {
+      title: "More check-ins are needed for a comparison.",
+      body: `This period has ${checkInCopy}. Add at least two check-ins; three spanning seven days give a more useful descriptive pattern. ${goalContextCopy(comparison)}`,
+    };
   }
 
   const divisor = unitSystem === "us" ? 453.59237 : 1000;
   const unit = unitSystem === "us" ? "lb" : "kg";
-  const delta = (last.weightGrams - first.weightGrams) / divisor;
-  const threshold = unitSystem === "us" ? 0.5 : 0.2;
-  const magnitude = Math.round(Math.abs(delta) * 10) / 10;
-  const trend = Math.abs(delta) <= threshold ? "steady" : delta > 0 ? "up" : "down";
-  const goalLabel = direction === "cut" ? "a cut" : direction === "gain" ? "a gain" : "maintenance";
-
-  if (trend === "steady") {
-    return {
-      title: `Weight looks steady across ${periodEntries.length} check-ins.`,
-      body: `That is a useful pattern to observe alongside your ${goalLabel} direction. Day-to-day variation is normal.`,
-    };
-  }
+  const magnitude = Math.round((Math.abs(comparison.changeGrams ?? 0) / divisor) * 10) / 10;
+  const title =
+    comparison.trend === "steady"
+      ? `No clear weight change across ${comparison.entryCount} check-ins.`
+      : `Weight is ${comparison.trend} ${magnitude} ${unit} across ${comparison.entryCount} check-ins.`;
+  const periodCopy = comparison.firstLoggedOn && comparison.lastLoggedOn
+    ? `from ${formatInsightDate(comparison.firstLoggedOn)} to ${formatInsightDate(comparison.lastLoggedOn)} (${comparison.observationDays} days)`
+    : "in the selected period";
+  const certaintyCopy = comparison.status === "limited"
+    ? "This is still a limited comparison because it needs at least three check-ins spanning seven days."
+    : "This is a descriptive pattern, not a prediction or medical recommendation.";
 
   return {
-    title: `Weight is ${trend} ${magnitude} ${unit} across ${periodEntries.length} check-ins.`,
-    body: `This is an observational trend for your ${goalLabel} direction, not a judgment or medical recommendation.`,
+    title,
+    body: `This uses ${comparison.entryCount} saved check-ins ${periodCopy}. ${goalContextCopy(comparison)} ${certaintyCopy}`,
   };
+}
+
+function goalContextCopy(comparison: RangeInsights["weightComparison"]) {
+  const revisionCopy = comparison.goalRevisionCount === 1
+    ? "One effective nutrition-goal revision was present."
+    : `${comparison.goalRevisionCount} effective nutrition-goal revisions were present.`;
+
+  if (comparison.goalDirectionContext === "unavailable") {
+    return `${revisionCopy} Goal direction was not stored for this historical period.`;
+  }
+
+  if (comparison.goalDirectionContext === "changed") {
+    return `${revisionCopy} Goal direction changed during this period (${comparison.goalDirections.join(" to ")}).`;
+  }
+
+  return `${revisionCopy} Goal direction was ${comparison.goalDirections[0]} throughout this period.`;
+}
+
+function formatInsightDate(dateKey: string) {
+  const date = new Date(`${dateKey}T12:00:00`);
+  return Number.isNaN(date.getTime())
+    ? dateKey
+    : new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(date);
 }
 
 const styles = StyleSheet.create({

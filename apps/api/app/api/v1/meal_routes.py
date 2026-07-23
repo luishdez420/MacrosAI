@@ -2,7 +2,7 @@ from datetime import UTC, date, datetime, time, timedelta
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy import Select, select
+from sqlalchemy import Select, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.auth import CurrentUser, ensure_current_user
@@ -174,8 +174,30 @@ def update_meal(
     request: Request,
     db: Session = Depends(get_db),
     current_user: CurrentUser = Depends(ensure_current_user),
+    if_match: str | None = Header(default=None, alias="If-Match"),
 ) -> MealRead:
     meal = get_meal_or_404(db, meal_id, current_user.id, request=request)
+    expected_revision = parse_meal_revision_precondition(if_match)
+
+    # Claim the revision before mutating related items. The conditional update
+    # makes concurrent stale editors fail safely instead of replacing data.
+    claimed_revision = db.execute(
+        update(Meal)
+        .where(
+            Meal.id == meal_id,
+            Meal.user_id == current_user.id,
+            Meal.revision == expected_revision,
+        )
+        .values(revision=Meal.revision + 1, updated_at=datetime.now(UTC))
+    )
+    if claimed_revision.rowcount != 1:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This meal changed on another device. Reload the latest meal before saving your edits.",
+        )
+
+    db.refresh(meal)
     update_data = meal_update.model_dump(exclude_unset=True)
 
     if "name" in update_data and update_data["name"] is not None:
@@ -309,6 +331,7 @@ def get_meal_or_404(
 def meal_to_read(meal: Meal) -> MealRead:
     return MealRead(
         id=meal.id,
+        revision=meal.revision,
         name=meal.name,
         meal_type=meal.meal_type,
         logged_at=meal.logged_at,
@@ -362,6 +385,32 @@ def meal_to_read(meal: Meal) -> MealRead:
             for item in meal.items
         ],
     )
+
+
+def parse_meal_revision_precondition(if_match: str | None) -> int:
+    """Read the single revision ETag accepted for saved-meal updates."""
+
+    if not if_match:
+        raise HTTPException(
+            status_code=status.HTTP_428_PRECONDITION_REQUIRED,
+            detail="Reload this meal before saving changes.",
+        )
+
+    value = if_match.strip()
+    if not (value.startswith('"') and value.endswith('"')):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="The meal revision is invalid. Reload the meal and try again.",
+        )
+    value = value[1:-1]
+
+    if not value.isdigit() or int(value) < 1:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="The meal revision is invalid. Reload the meal and try again.",
+        )
+
+    return int(value)
 
 
 def persist_confirmed_analysis_images(

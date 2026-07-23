@@ -1,12 +1,13 @@
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.core.metrics import metrics
 from app.db.base import Base
 from app.models.food import FoodSourceRecord
+from app.models.worker import WorkerHeartbeat
 from app.schemas.common import ConfidenceTier, NutrientsPer100g
 from app.schemas.food import FoodSearchResult, ProviderName
 from app.workers.food_source_refresh import run_once, select_due_source_record_ids
@@ -32,6 +33,10 @@ async def test_worker_refreshes_only_a_bounded_stale_provider_batch() -> None:
         assert still_stale is not None and still_stale.display_name == "Later stale drink"
         assert fresh is not None and fresh.display_name == "Fresh source drink"
         assert custom is not None and custom.display_name == "My private drink"
+        heartbeat = db.scalar(
+            select(WorkerHeartbeat).where(WorkerHeartbeat.worker_name == "food_source_refresh")
+        )
+        assert heartbeat is not None
 
 
 async def test_worker_respects_refresh_backoff_and_preserves_stale_snapshot_on_failure() -> None:

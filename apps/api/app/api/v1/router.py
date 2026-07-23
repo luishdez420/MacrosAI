@@ -19,12 +19,14 @@ from app.api.v1 import (
 from app.db.health import database_health
 from app.core.middleware import get_request_id
 from app.core.metrics import metrics
+from app.core.config import settings
 from app.core.rate_limit import RateLimitBackendUnavailableError, RedisRateLimiter
 from app.nutrition.circuit_breaker import (
     ProviderCircuitBreakerUnavailableError,
     RedisProviderCircuitBreaker,
 )
 from app.nutrition.provider_registry import get_provider_registry
+from app.services.worker_heartbeats import background_worker_health
 
 api_router = APIRouter()
 
@@ -66,7 +68,31 @@ async def api_readiness(request: Request) -> dict[str, object] | JSONResponse:
             provider_circuit["healthy"] = False
 
     database_healthy = bool(database["connected"]) and bool(database["schemaReady"])
-    ready = database_healthy and rate_limiter["healthy"] and provider_circuit["healthy"]
+    worker_health = (
+        background_worker_health()
+        if database_healthy and settings.background_worker_heartbeats_required
+        else None
+    )
+    background_workers = (
+        worker_health.to_response()
+        if worker_health is not None
+        else {
+            "required": settings.background_worker_heartbeats_required,
+            "healthy": not settings.background_worker_heartbeats_required,
+            "backend": (
+                "database_unavailable"
+                if settings.background_worker_heartbeats_required
+                else "disabled"
+            ),
+            "workers": {},
+        }
+    )
+    ready = (
+        database_healthy
+        and rate_limiter["healthy"]
+        and provider_circuit["healthy"]
+        and bool(background_workers["healthy"])
+    )
     payload: dict[str, object] = {
         "ok": ready,
         "database": {
@@ -74,6 +100,7 @@ async def api_readiness(request: Request) -> dict[str, object] | JSONResponse:
         },
         "rateLimiter": rate_limiter,
         "providerCircuit": provider_circuit,
+        "backgroundWorkers": background_workers,
     }
     metrics.set_gauge(
         "living_nutrition_dependency_healthy",
@@ -90,6 +117,8 @@ async def api_readiness(request: Request) -> dict[str, object] | JSONResponse:
         1 if provider_circuit["healthy"] else 0,
         {"dependency": "provider_circuit_breaker"},
     )
+    for worker_name, healthy in background_workers["workers"].items():
+        metrics.set_background_worker_health(worker=worker_name, healthy=bool(healthy))
     if ready:
         return payload
 

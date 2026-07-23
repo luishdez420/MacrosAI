@@ -4,7 +4,7 @@ import re
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse
-from sqlalchemy import and_, delete, or_, select, update
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -43,7 +43,7 @@ from app.models.food import (
     FoodSourceRecord,
     FoodSourceRevision,
 )
-from app.models.user import FavoriteFood, RecentFood
+from app.models.user import FavoriteFood, FavoriteFoodTag, FavoriteFoodTagAssignment, RecentFood
 from app.nutrition.provider_registry import (
     NutritionProviderRegistry,
     get_provider_registry,
@@ -59,6 +59,7 @@ from app.schemas.food import (
     FoodCorrectionReportRead,
     FoodCorrectionReportStatusHistoryRead,
     FoodDetail,
+    FavoriteFoodTagsUpdate,
     FoodQualityAssessment,
     FoodSearchResponse,
     FoodSearchResult,
@@ -83,6 +84,7 @@ async def search_foods(
     request: Request,
     query: str = Query(min_length=2),
     locale: str = "en-US",
+    _current_user: CurrentUser = Depends(ensure_current_user),
     db: Session = Depends(get_db),
     registry: NutritionProviderRegistry = Depends(get_provider_registry),
 ) -> FoodSearchResponse | JSONResponse:
@@ -121,9 +123,9 @@ async def search_foods(
             )
         )
 
-    # Search is a provider catalog surface. User-created foods are deliberately
-    # kept out of this shared cache path and are available only through the
-    # authenticated /foods/custom endpoint.
+    # Search exposes a shared provider catalog to authenticated accounts.
+    # User-created foods are deliberately kept out of this shared cache path
+    # and remain available only through their owner-scoped custom-food routes.
     cached_records = search_cached_food_records(query, db)
     cache_first_items = cache_first_search_items(query, cached_records)
 
@@ -443,15 +445,89 @@ def list_favorite_foods(
     db: Session = Depends(get_db),
     current_user: CurrentUser = Depends(ensure_current_user),
 ) -> FoodSearchResponse:
-    records = db.scalars(
-        select(FoodSourceRecord)
-        .join(FavoriteFood, FavoriteFood.food_source_record_id == FoodSourceRecord.id)
+    favorites = db.execute(
+        select(FavoriteFood, FoodSourceRecord)
+        .join(FoodSourceRecord, FavoriteFood.food_source_record_id == FoodSourceRecord.id)
         .where(FavoriteFood.user_id == current_user.id)
         .order_by(FavoriteFood.created_at.desc())
         .limit(limit)
     ).all()
+    tags_by_favorite_id = favorite_tags_by_favorite_id(
+        db,
+        current_user.id,
+        [favorite.id for favorite, _record in favorites],
+    )
 
-    return FoodSearchResponse(items=[food_result_from_record(record) for record in records])
+    return FoodSearchResponse(
+        items=[
+            food_result_from_record(
+                record,
+                saved_tags=tags_by_favorite_id.get(favorite.id, []),
+            )
+            for favorite, record in favorites
+        ]
+    )
+
+
+@router.put("/favorites/{food_id:path}/tags", response_model=FoodSearchResult)
+def replace_favorite_food_tags(
+    food_id: str,
+    tag_update: FavoriteFoodTagsUpdate,
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(ensure_current_user),
+) -> FoodSearchResult:
+    """Replace a favorite's private organization tags for the current account."""
+
+    source_record = get_stored_food_source_record(food_id, db)
+    if not source_record:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Favorite food not found.")
+
+    favorite = db.scalar(
+        select(FavoriteFood).where(
+            FavoriteFood.user_id == current_user.id,
+            FavoriteFood.food_source_record_id == source_record.id,
+        )
+    )
+    if not favorite:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Favorite food not found.")
+
+    requested_tags = tag_update.tags
+    existing_tags = db.scalars(
+        select(FavoriteFoodTag).where(
+            FavoriteFoodTag.user_id == current_user.id,
+            func.lower(FavoriteFoodTag.name).in_([tag.lower() for tag in requested_tags]),
+        )
+    ).all() if requested_tags else []
+    tags_by_normalized_name = {tag.name.casefold(): tag for tag in existing_tags}
+    resolved_tags: list[FavoriteFoodTag] = []
+
+    for name in requested_tags:
+        tag = tags_by_normalized_name.get(name.casefold())
+        if tag is None:
+            tag = FavoriteFoodTag(user_id=current_user.id, name=name)
+            db.add(tag)
+            db.flush()
+            tags_by_normalized_name[name.casefold()] = tag
+        resolved_tags.append(tag)
+
+    db.execute(
+        delete(FavoriteFoodTagAssignment).where(
+            FavoriteFoodTagAssignment.favorite_food_id == favorite.id
+        )
+    )
+    db.add_all(
+        FavoriteFoodTagAssignment(
+            favorite_food_id=favorite.id,
+            favorite_food_tag_id=tag.id,
+        )
+        for tag in resolved_tags
+    )
+    db.commit()
+
+    return food_result_from_record(
+        source_record,
+        saved_tags=[tag.name for tag in resolved_tags],
+    )
 
 
 @router.put("/favorites/{food_id:path}", response_model=FoodSearchResult)
@@ -486,15 +562,15 @@ async def add_favorite_food(
     )
 
     if not existing:
-        db.add(
-            FavoriteFood(
-                user_id=current_user.id,
-                food_source_record_id=source_record.id,
-            )
+        existing = FavoriteFood(
+            user_id=current_user.id,
+            food_source_record_id=source_record.id,
         )
+        db.add(existing)
         db.commit()
 
-    return food_result_from_record(source_record)
+    saved_tags = favorite_tags_by_favorite_id(db, current_user.id, [existing.id]).get(existing.id, [])
+    return food_result_from_record(source_record, saved_tags=saved_tags)
 
 
 @router.delete("/favorites/{food_id:path}", status_code=status.HTTP_204_NO_CONTENT)
@@ -1756,7 +1832,11 @@ def food_source_retrieval_history(
     ]
 
 
-def food_result_from_record(record: FoodSourceRecord) -> FoodSearchResult:
+def food_result_from_record(
+    record: FoodSourceRecord,
+    *,
+    saved_tags: list[str] | None = None,
+) -> FoodSearchResult:
     return FoodSearchResult(
         id=f"{record.provider}:{record.external_id}",
         display_name=record.display_name,
@@ -1774,7 +1854,37 @@ def food_result_from_record(record: FoodSourceRecord) -> FoodSearchResult:
         record_confidence=ConfidenceTier.verified if record.provider == ProviderName.user else ConfidenceTier.medium,
         source_reference=record.source_reference,
         retrieved_at=record.retrieved_at,
+        saved_tags=saved_tags or [],
     )
+
+
+def favorite_tags_by_favorite_id(
+    db: Session,
+    user_id: str,
+    favorite_ids: list[str],
+) -> dict[str, list[str]]:
+    """Return tags without attaching user-specific state to source food records."""
+
+    if not favorite_ids:
+        return {}
+
+    rows = db.execute(
+        select(FavoriteFoodTagAssignment.favorite_food_id, FavoriteFoodTag.name)
+        .join(
+            FavoriteFoodTag,
+            FavoriteFoodTag.id == FavoriteFoodTagAssignment.favorite_food_tag_id,
+        )
+        .join(FavoriteFood, FavoriteFood.id == FavoriteFoodTagAssignment.favorite_food_id)
+        .where(
+            FavoriteFood.user_id == user_id,
+            FavoriteFoodTagAssignment.favorite_food_id.in_(favorite_ids),
+        )
+        .order_by(FavoriteFoodTag.name.asc())
+    ).all()
+    tags_by_favorite_id: dict[str, list[str]] = {favorite_id: [] for favorite_id in favorite_ids}
+    for favorite_id, name in rows:
+        tags_by_favorite_id.setdefault(favorite_id, []).append(name)
+    return tags_by_favorite_id
 
 
 def quality_assessment_for(

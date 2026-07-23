@@ -90,6 +90,7 @@ function meal(): MealRead {
 
   return {
     id: "meal_1",
+    revision: 1,
     name: "Chicken bowl",
     loggedAt: "2026-07-13T12:00:00Z",
     notes: null,

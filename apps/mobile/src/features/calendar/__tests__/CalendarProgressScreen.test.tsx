@@ -11,14 +11,12 @@ import { CalendarProgressScreen } from "../CalendarProgressScreen";
 const mockGetRangeInsights = jest.fn();
 const mockGetMonthlyInsights = jest.fn();
 const mockGetPreferences = jest.fn();
-const mockListWeightEntries = jest.fn();
 
 jest.mock("../../../services/api", () => ({
   api: {
     getRangeInsights: (...args: unknown[]) => mockGetRangeInsights(...args),
     getMonthlyInsights: (...args: unknown[]) => mockGetMonthlyInsights(...args),
     getPreferences: (...args: unknown[]) => mockGetPreferences(...args),
-    listWeightEntries: (...args: unknown[]) => mockListWeightEntries(...args),
   },
 }));
 
@@ -31,11 +29,9 @@ describe("CalendarProgressScreen", () => {
     mockGetRangeInsights.mockReset();
     mockGetMonthlyInsights.mockReset();
     mockGetPreferences.mockReset();
-    mockListWeightEntries.mockReset();
     mockGetRangeInsights.mockResolvedValue(rangeInsights());
     mockGetMonthlyInsights.mockResolvedValue(monthlyInsights());
     mockGetPreferences.mockResolvedValue({ unitSystem: "metric", goalDirection: "maintain" });
-    mockListWeightEntries.mockResolvedValue([]);
   });
 
   it("renders a goal-based line graph and latest-day observation from saved meal insights", async () => {
@@ -171,19 +167,57 @@ describe("CalendarProgressScreen", () => {
     });
   });
 
-  it("shows a neutral weight pattern when saved check-ins exist in the selected period", async () => {
-    const latestCheckIn = dateKeyDaysAgo(1);
-    const firstCheckIn = dateKeyDaysAgo(2);
-    mockListWeightEntries.mockResolvedValue([
-      { id: "weight_1", loggedOn: firstCheckIn, weightGrams: 80000, notes: null, createdAt: `${firstCheckIn}T12:00:00Z` },
-      { id: "weight_2", loggedOn: latestCheckIn, weightGrams: 78000, notes: null, createdAt: `${latestCheckIn}T12:00:00Z` },
-    ]);
+  it("shows the server-calculated weight evidence and historical goal context", async () => {
+    mockGetRangeInsights.mockResolvedValue(
+      rangeInsights({
+        weightComparison: {
+          status: "observed",
+          trend: "down",
+          entryCount: 3,
+          firstLoggedOn: "2026-07-02",
+          lastLoggedOn: "2026-07-08",
+          observationDays: 6,
+          changeGrams: -2000,
+          goalDirectionContext: "changed",
+          goalDirections: ["cut", "gain"],
+          goalRevisionCount: 2,
+        },
+      })
+    );
 
     const view = await renderWithQueryClient(<CalendarProgressScreen />);
 
     await waitFor(() => {
-      expect(view.getByText("Weight is down 2 kg across 2 check-ins.")).toBeTruthy();
-      expect(view.getByText(/observational trend for your maintenance direction/)).toBeTruthy();
+      expect(view.getByText("Weight is down 2 kg across 3 check-ins.")).toBeTruthy();
+      expect(view.getByText(/from Jul 2 to Jul 8 \(6 days\)/)).toBeTruthy();
+      expect(view.getByText(/Goal direction changed during this period \(cut to gain\)/)).toBeTruthy();
+    });
+  });
+
+  it("explains when a selected period has insufficient weight data", async () => {
+    mockGetRangeInsights.mockResolvedValue(
+      rangeInsights({
+        weightComparison: {
+          status: "insufficient_data",
+          trend: "unavailable",
+          entryCount: 1,
+          firstLoggedOn: null,
+          lastLoggedOn: null,
+          observationDays: 0,
+          changeGrams: null,
+          goalDirectionContext: "unavailable",
+          goalDirections: [],
+          goalRevisionCount: 0,
+        },
+      })
+    );
+
+    const view = await renderWithQueryClient(<CalendarProgressScreen />);
+
+    await waitFor(() => {
+      expect(view.getByText("More check-ins are needed for a comparison.")).toBeTruthy();
+      expect(view.getByText(/This period has one check-in/)).toBeTruthy();
+      expect(view.getByText(/Goal direction was not stored for this historical period/)).toBeTruthy();
     });
   });
 
@@ -218,6 +252,18 @@ function rangeInsights(
     averageCalories: number;
     averageProteinGrams: number;
     averageFiberGrams: number;
+    weightComparison: {
+      status: "insufficient_data" | "limited" | "observed";
+      trend: "up" | "down" | "steady" | "unavailable";
+      entryCount: number;
+      firstLoggedOn: string | null;
+      lastLoggedOn: string | null;
+      observationDays: number;
+      changeGrams: number | null;
+      goalDirectionContext: "consistent" | "changed" | "unavailable";
+      goalDirections: Array<"maintain" | "cut" | "gain">;
+      goalRevisionCount: number;
+    };
     days: ReturnType<typeof insightDay>[];
   }> = {}
 ) {
@@ -231,6 +277,18 @@ function rangeInsights(
     averageCalories: 1915,
     averageProteinGrams: 101,
     averageFiberGrams: 18,
+    weightComparison: {
+      status: "insufficient_data",
+      trend: "unavailable",
+      entryCount: 0,
+      firstLoggedOn: null,
+      lastLoggedOn: null,
+      observationDays: 0,
+      changeGrams: null,
+      goalDirectionContext: "unavailable",
+      goalDirections: [],
+      goalRevisionCount: 0,
+    },
     days: [
       insightDay("2026-07-02", 0, 0, false),
       insightDay("2026-07-03", 2150, 118, true),
@@ -277,16 +335,6 @@ function insightDay(date: string, calories: number, proteinGrams: number, goalMe
     mealCount: calories > 0 ? 2 : 0,
     goalMet,
   };
-}
-
-function dateKeyDaysAgo(daysAgo: number) {
-  const date = new Date();
-  date.setHours(12, 0, 0, 0);
-  date.setDate(date.getDate() - daysAgo);
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
 }
 
 function renderWithQueryClient(element: ReactElement, themePreference: ThemePreference = "light") {

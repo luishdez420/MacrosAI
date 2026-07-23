@@ -79,6 +79,7 @@ def test_create_meal_and_read_diary_totals() -> None:
         )
         assert created.status_code == 201
         assert created.json()["mealType"] == "breakfast"
+        assert created.json()["revision"] == 1
         assert created.json()["loggedAt"].startswith("2026-07-06T12:00:00")
         assert created.json()["items"][0]["displayName"] == "Bananas, raw"
 
@@ -120,6 +121,7 @@ def test_create_meal_and_read_diary_totals() -> None:
 
         updated = client.patch(
             f"/api/v1/meals/{created.json()['id']}",
+            headers={"If-Match": '"1"'},
             json={
                 "mealType": "snack",
                 "loggedAt": "2026-07-06T15:30:00Z",
@@ -141,9 +143,36 @@ def test_create_meal_and_read_diary_totals() -> None:
             },
         )
         assert updated.status_code == 200
+        assert updated.json()["revision"] == 2
         assert updated.json()["mealType"] == "snack"
         assert updated.json()["loggedAt"].startswith("2026-07-06T15:30:00")
         assert updated.json()["items"][0]["consumedGrams"] == 59
+
+        stale_update = client.patch(
+            f"/api/v1/meals/{created.json()['id']}",
+            headers={"If-Match": '"1"'},
+            json={"name": "Stale edit"},
+        )
+        assert stale_update.status_code == 409
+        assert "changed on another device" in stale_update.json()["error"]["message"]
+
+        missing_revision = client.patch(
+            f"/api/v1/meals/{created.json()['id']}",
+            json={"name": "Missing revision"},
+        )
+        assert missing_revision.status_code == 428
+
+        invalid_revision = client.patch(
+            f"/api/v1/meals/{created.json()['id']}",
+            headers={"If-Match": "2"},
+            json={"name": "Invalid revision"},
+        )
+        assert invalid_revision.status_code == 400
+
+        current = client.get(f"/api/v1/meals/{created.json()['id']}")
+        assert current.status_code == 200
+        assert current.json()["name"] == "Banana"
+        assert current.json()["revision"] == 2
 
         recent_after_update = client.get("/api/v1/foods/recent")
         assert recent_after_update.status_code == 200

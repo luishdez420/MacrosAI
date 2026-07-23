@@ -23,6 +23,7 @@ export function filterSavedFoods(items: FoodSearchResult[], query: string) {
       item.provider,
       item.dataType,
       item.householdServingText,
+      ...(item.savedTags ?? []),
     ]
       .filter(Boolean)
       .join(" ")
@@ -30,6 +31,53 @@ export function filterSavedFoods(items: FoodSearchResult[], query: string) {
 
     return searchableText.includes(normalizedQuery);
   });
+}
+
+export function savedFoodTags(items: FoodSearchResult[]) {
+  const tagsByNormalizedName = new Map<string, string>();
+
+  for (const item of items) {
+    for (const tag of item.savedTags ?? []) {
+      const cleaned = tag.trim();
+      if (cleaned) {
+        const normalizedName = cleaned.toLocaleLowerCase();
+        if (!tagsByNormalizedName.has(normalizedName)) {
+          tagsByNormalizedName.set(normalizedName, cleaned);
+        }
+      }
+    }
+  }
+
+  return [...tagsByNormalizedName.values()].sort((left, right) =>
+    left.localeCompare(right, undefined, { sensitivity: "base" })
+  );
+}
+
+export function filterSavedFoodsByTag(items: FoodSearchResult[], tag: string | null) {
+  if (!tag) {
+    return items;
+  }
+
+  const normalizedTag = tag.trim().toLocaleLowerCase();
+  return items.filter((item) =>
+    (item.savedTags ?? []).some((itemTag) => itemTag.trim().toLocaleLowerCase() === normalizedTag)
+  );
+}
+
+export function parseSavedFoodTags(value: string) {
+  const normalizedTags = new Map<string, string>();
+
+  for (const tag of value.split(",")) {
+    const cleaned = tag.trim();
+    if (cleaned) {
+      const normalizedTag = cleaned.toLocaleLowerCase();
+      if (!normalizedTags.has(normalizedTag)) {
+        normalizedTags.set(normalizedTag, cleaned);
+      }
+    }
+  }
+
+  return [...normalizedTags.values()].slice(0, 10);
 }
 
 export function savedFoodFilterLabel(filter: SavedFoodFilter) {

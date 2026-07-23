@@ -101,7 +101,7 @@ describe("profile weight presentation", () => {
     );
   });
 
-  it("connects weight trends to the selected goal direction", () => {
+  it("keeps current-direction weight feedback descriptive", () => {
     const downTrend = [
       weightEntry("entry_1", "2026-07-01", 80000),
       weightEntry("entry_2", "2026-07-08", 79500),
@@ -115,16 +115,22 @@ describe("profile weight presentation", () => {
       weightEntry("entry_2", "2026-07-08", 80100),
     ];
 
-    expect(buildWeightGoalInsight(downTrend, "metric", "cut").tone).toBe("success");
-    expect(buildWeightGoalInsight(upTrend, "metric", "cut").tone).toBe("warning");
-    expect(buildWeightGoalInsight(upTrend, "metric", "gain").tone).toBe("success");
-    expect(buildWeightGoalInsight(stableTrend, "metric", "maintain").tone).toBe("success");
+    expect(buildWeightGoalInsight(downTrend, "metric", "cut")).toMatchObject({
+      title: "Weight comparison is still early",
+      tone: "neutral",
+    });
+    expect(buildWeightGoalInsight(upTrend, "metric", "gain").body).toContain(
+      "current gain direction"
+    );
+    expect(buildWeightGoalInsight(stableTrend, "metric", "maintain").body).toContain(
+      "No clear weight change"
+    );
   });
 
   it("asks for more weight entries before giving goal-trend feedback", () => {
     expect(buildWeightGoalInsight([weightEntry("entry_1", "2026-07-01", 80000)], "us", "cut")).toEqual({
-      title: "Goal trend needs more data",
-      body: "Log at least two weight entries to compare your trend with your selected goal direction.",
+      title: "Weight comparison needs more data",
+      body: "Log at least two weight entries to describe a change. Three check-ins spanning seven days are more useful for a goal-context comparison.",
       tone: "neutral",
     });
   });

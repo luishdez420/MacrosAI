@@ -18,6 +18,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { colors, elevations, glass, radii, spacing, typography, type ThemePalette } from "@living-nutrition/design-tokens";
+import { AnalysisAllowanceNotice } from "../../shared/components/AnalysisAllowanceNotice";
 import { ActionButton, GlassIconButton, InlineNotice } from "../../shared/components/LivingUI";
 import { useTheme } from "../../shared/theme/ThemeProvider";
 import { env } from "../../config/env";
@@ -283,6 +284,7 @@ export function CameraScreen() {
               </Text>
             </Pressable>
           </View>
+          <AnalysisAllowanceNotice kind="meal" />
           <View style={styles.plateReferencePanel}>
             <View style={styles.plateReferenceHeader}>
               <View style={styles.plateReferenceTitleRow}>

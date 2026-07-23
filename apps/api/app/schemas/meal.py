@@ -80,6 +80,7 @@ class MealItemRead(MealItemCreate):
 
 class MealRead(ApiModel):
     id: str
+    revision: int = Field(ge=1)
     name: str
     meal_type: MealType = MealType.meal
     logged_at: datetime

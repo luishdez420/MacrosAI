@@ -8,6 +8,7 @@ REQUIRED_TABLES = {
     "auth_sessions",
     "food_source_records",
     "audit_deliveries",
+    "worker_heartbeats",
     "meals",
     "meal_items",
     "user_preferences",

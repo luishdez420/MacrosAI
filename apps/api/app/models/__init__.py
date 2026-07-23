@@ -17,13 +17,16 @@ from app.models.food import (
     NutrientDefinition,
 )
 from app.models.meal import Meal, MealImage, MealItem
-from app.models.recipe import Recipe, RecipeItem
+from app.models.recipe import Recipe, RecipeFolder, RecipeItem, RecipeTag, RecipeTagAssignment
 from app.models.usage import AiEntitlement, AiUsageRecord
+from app.models.worker import WorkerHeartbeat
 from app.models.user import (
     AuditDelivery,
     AuditLog,
     AuthSession,
     FavoriteFood,
+    FavoriteFoodTag,
+    FavoriteFoodTagAssignment,
     HydrationEntry,
     NutritionGoal,
     RecentFood,
@@ -45,6 +48,8 @@ __all__ = [
     "DataCorrectionReport",
     "DataCorrectionReportStatusEvent",
     "FavoriteFood",
+    "FavoriteFoodTag",
+    "FavoriteFoodTagAssignment",
     "HydrationEntry",
     "IdempotencyRecord",
     "FoodNutrient",
@@ -60,8 +65,12 @@ __all__ = [
     "NutritionGoal",
     "RecentFood",
     "Recipe",
+    "RecipeFolder",
     "RecipeItem",
+    "RecipeTag",
+    "RecipeTagAssignment",
     "User",
     "UserPreference",
     "WeightEntry",
+    "WorkerHeartbeat",
 ]

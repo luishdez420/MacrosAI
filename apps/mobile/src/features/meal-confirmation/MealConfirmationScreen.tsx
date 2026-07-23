@@ -1757,6 +1757,8 @@ function createMealFromAnalysis(
       const replacement = review.replacement;
       const addedOilGrams = parsePositiveNumber(review.addedOilGrams);
       const nutrients = adjustedNutrients(item, confirmedGrams, addedOilGrams, replacement);
+      const baseNutrients = adjustedNutrients(item, confirmedGrams, 0, replacement);
+      const nutrientsPer100g = nutrientsForPer100g(baseNutrients, confirmedGrams);
       const addOns = review.addOns ?? [];
       const preparationMethod = review.preparationMethod ?? "not_sure";
       const sourceProvider = replacement?.provider ?? item.provider;
@@ -1809,6 +1811,7 @@ function createMealFromAnalysis(
           replacementFoodId: replacement ? `${replacement.provider}:${replacement.externalId}` : undefined,
           replacementDisplayName: replacement?.displayName,
           replacementNutrientsPer100g: replacement?.nutrientsPer100g,
+          nutrientsPer100g,
           qualityAssessment: replacement?.qualityAssessment ?? item.qualityAssessment,
           originalEstimatedGrams: item.servingGrams,
           portionRangeGrams: item.portionRangeGrams,
@@ -2153,6 +2156,23 @@ function scalePer100gNutrients(nutrients: NutrientPer100g, grams: number): Nutri
     fiberGrams: scaleOptional(nutrients.fiberGrams, scale),
     sugarGrams: scaleOptional(nutrients.sugarGrams, scale),
     sodiumMilligrams: scaleOptional(nutrients.sodiumMilligrams, scale),
+  };
+}
+
+function nutrientsForPer100g(nutrients: NutrientPer100g, grams: number): NutrientPer100g {
+  if (grams <= 0) {
+    return zeroNutrients();
+  }
+
+  const scale = 100 / grams;
+  return {
+    caloriesKcal: nutrients.caloriesKcal * scale,
+    proteinGrams: nutrients.proteinGrams * scale,
+    carbohydrateGrams: nutrients.carbohydrateGrams * scale,
+    fatGrams: nutrients.fatGrams * scale,
+    fiberGrams: nutrients.fiberGrams === undefined ? undefined : nutrients.fiberGrams * scale,
+    sugarGrams: nutrients.sugarGrams === undefined ? undefined : nutrients.sugarGrams * scale,
+    sodiumMilligrams: nutrients.sodiumMilligrams === undefined ? undefined : nutrients.sodiumMilligrams * scale,
   };
 }
 

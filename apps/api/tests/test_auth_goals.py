@@ -64,10 +64,11 @@ def test_production_settings_require_strong_jwt_and_disable_dev_compatibility() 
         rate_limit_backend="redis",
         trusted_proxy_cidrs="10.0.0.0/8",
         nutrition_provider_circuit_breaker_backend="redis",
-        metrics_enabled=True,
-        metrics_bearer_token="test-metrics-token",
-        sentry_dsn="https://public@sentry.example.test/123",
-        image_storage_backend="s3",
+            metrics_enabled=True,
+            metrics_bearer_token="test-metrics-token",
+            sentry_dsn="https://public@sentry.example.test/123",
+            background_worker_heartbeats_required=True,
+            image_storage_backend="s3",
         image_storage_s3_bucket="living-nutrition-private",
     )
     assert settings.jwt_access_token_minutes == 15

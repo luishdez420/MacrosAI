@@ -5,13 +5,15 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from app.api.v1.auth_routes import session_from_user
-from app.api.v1.food_routes import food_result_from_record
+from app.api.v1.food_routes import favorite_tags_by_favorite_id, food_result_from_record
+from app.api.v1.recipe_routes import recipe_tags_by_recipe_id
 from app.api.v1.goal_routes import goal_to_read
 from app.api.v1.hydration_routes import hydration_entry_to_read
 from app.api.v1.meal_routes import meal_to_read
 from app.api.v1.recipe_routes import recipe_to_read
 from app.api.v1.preference_routes import get_or_create_preferences, preference_to_read
 from app.api.v1.weight_routes import weight_entry_to_read
+from app.core.ai_quota import get_ai_usage_summary
 from app.core.auth import CurrentUser, ensure_current_user
 from app.core.audit import record_audit_event
 from app.db.session import get_db
@@ -23,6 +25,7 @@ from app.models.user import AuditLog, AuthSession, FavoriteFood, HydrationEntry,
 from app.services.image_lifecycle import delete_image
 from app.storage import PrivateImageStorage, build_private_image_storage
 from app.schemas.export import EXPORT_FORMAT_VERSION, UserDataExportRead
+from app.schemas.auth import AiUsageAllowanceRead, AiUsageSummaryRead
 from app.schemas.food import (
     FoodCorrectionReportList,
     FoodCorrectionReportStatusHistoryRead,
@@ -32,6 +35,21 @@ from app.schemas.food import (
 from app.services.correction_reports import status_events_for_report
 
 router = APIRouter()
+
+
+@router.get("/account/ai-usage", response_model=AiUsageSummaryRead)
+def get_current_user_ai_usage(
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(ensure_current_user),
+) -> AiUsageSummaryRead:
+    """Expose current capacity without leaking entitlement or usage history."""
+
+    summary = get_ai_usage_summary(db, user_id=current_user.id)
+    return AiUsageSummaryRead(
+        window_days=summary.window_days,
+        meal_analysis=AiUsageAllowanceRead(**summary.meal_analysis.__dict__),
+        nutrition_label_analysis=AiUsageAllowanceRead(**summary.nutrition_label_analysis.__dict__),
+    )
 
 
 @router.get("/correction-reports", response_model=FoodCorrectionReportList)
@@ -84,15 +102,21 @@ def export_current_user_data(
     recipes = db.scalars(
         select(Recipe)
         .where(Recipe.user_id == current_user.id)
-        .options(selectinload(Recipe.items))
+        .options(selectinload(Recipe.items), selectinload(Recipe.folder))
         .order_by(Recipe.updated_at.desc(), Recipe.created_at.desc())
     ).all()
-    favorite_records = db.scalars(
-        select(FoodSourceRecord)
-        .join(FavoriteFood, FavoriteFood.food_source_record_id == FoodSourceRecord.id)
+    recipe_tags = recipe_tags_by_recipe_id(db, current_user.id, [recipe.id for recipe in recipes])
+    favorites = db.execute(
+        select(FavoriteFood, FoodSourceRecord)
+        .join(FoodSourceRecord, FavoriteFood.food_source_record_id == FoodSourceRecord.id)
         .where(FavoriteFood.user_id == current_user.id)
         .order_by(FavoriteFood.created_at.desc())
     ).all()
+    favorite_tags = favorite_tags_by_favorite_id(
+        db,
+        current_user.id,
+        [favorite.id for favorite, _record in favorites],
+    )
     recent_records = db.scalars(
         select(FoodSourceRecord)
         .join(RecentFood, RecentFood.food_source_record_id == FoodSourceRecord.id)
@@ -115,8 +139,17 @@ def export_current_user_data(
         weight_entries=[weight_entry_to_read(entry) for entry in weight_entries],
         hydration_entries=[hydration_entry_to_read(entry) for entry in hydration_entries],
         meals=[meal_to_read(meal) for meal in meals],
-        recipes=[recipe_to_read(recipe) for recipe in recipes],
-        favorite_foods=[food_result_from_record(record) for record in favorite_records],
+        recipes=[
+            recipe_to_read(recipe, recipe_tags.get(recipe.id, []))
+            for recipe in recipes
+        ],
+        favorite_foods=[
+            food_result_from_record(
+                record,
+                saved_tags=favorite_tags.get(favorite.id, []),
+            )
+            for favorite, record in favorites
+        ],
         recent_foods=[food_result_from_record(record) for record in recent_records],
         custom_foods=[food_result_from_record(record) for record in custom_records],
     )

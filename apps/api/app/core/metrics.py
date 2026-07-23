@@ -26,6 +26,9 @@ METRIC_HELP = {
     "living_nutrition_food_cache_events_total": "Food-cache lookup, refresh, and fallback events.",
     "living_nutrition_audit_retention_events_total": "Audit-retention sweep outcomes without audit content.",
     "living_nutrition_audit_delivery_events_total": "Privacy-minimized audit delivery outcomes without audit content.",
+    "living_nutrition_idempotency_retention_events_total": "Idempotency replay-record retention sweep outcomes without request content.",
+    "living_nutrition_ai_quota_reconciliation_events_total": "AI quota reservation reconciliation outcomes without user or request content.",
+    "living_nutrition_background_worker_healthy": "Required background-worker liveness from the latest readiness probe.",
 }
 
 
@@ -141,6 +144,19 @@ class MetricsRegistry:
 
     def record_audit_delivery_event(self, *, outcome: str) -> None:
         self.increment("living_nutrition_audit_delivery_events_total", {"outcome": outcome})
+
+    def record_idempotency_retention_event(self, *, outcome: str) -> None:
+        self.increment("living_nutrition_idempotency_retention_events_total", {"outcome": outcome})
+
+    def record_ai_quota_reconciliation_event(self, *, outcome: str) -> None:
+        self.increment("living_nutrition_ai_quota_reconciliation_events_total", {"outcome": outcome})
+
+    def set_background_worker_health(self, *, worker: str, healthy: bool) -> None:
+        self.set_gauge(
+            "living_nutrition_background_worker_healthy",
+            1 if healthy else 0,
+            {"worker": worker},
+        )
 
     def render_prometheus(self) -> str:
         with self._lock:

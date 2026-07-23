@@ -23,6 +23,7 @@ from app.nutrition.circuit_breaker import (
     ProviderCircuitBreakerUnavailableError,
     RedisProviderCircuitBreaker,
 )
+from app.services.worker_heartbeats import WorkerHealthReport
 from app.main import app
 
 
@@ -97,7 +98,7 @@ def test_auth_rate_limit_uses_error_envelope_and_request_id(monkeypatch) -> None
     }
 
 
-def test_public_food_search_has_an_independent_correlated_ip_budget(monkeypatch) -> None:
+def test_authenticated_food_search_has_an_independent_correlated_ip_budget(monkeypatch) -> None:
     monkeypatch.setattr(settings, "rate_limit_food_search_max_requests", 1)
     monkeypatch.setattr(settings, "rate_limit_food_search_window_seconds", 60)
     protected_app = FastAPI()
@@ -338,7 +339,7 @@ def test_durable_analysis_jobs_use_the_paid_analysis_rate_limit_policy() -> None
     assert policy.name == "analysis"
 
 
-def test_public_catalog_search_uses_only_its_ip_rate_limit_policy() -> None:
+def test_authenticated_catalog_search_uses_its_ip_rate_limit_policy() -> None:
     request = rate_limit_request(path="/api/v1/foods/search", method="GET")
 
     plan = rate_limit_checks_for_request(
@@ -454,6 +455,12 @@ def test_readiness_fails_closed_when_the_configured_redis_limiter_is_unavailable
         "database": {"healthy": True},
         "rateLimiter": {"backend": "redis", "healthy": False},
         "providerCircuit": {"backend": "memory", "healthy": True},
+        "backgroundWorkers": {
+            "required": False,
+            "healthy": True,
+            "backend": "disabled",
+            "workers": {},
+        },
         "requestId": response.headers["x-request-id"],
     }
 
@@ -496,6 +503,44 @@ def test_readiness_reports_an_unavailable_shared_provider_circuit(monkeypatch) -
 
     assert response.status_code == 503
     assert response.json()["providerCircuit"] == {"backend": "redis", "healthy": False}
+    assert response.json()["requestId"] == response.headers["x-request-id"]
+
+
+def test_readiness_fails_closed_when_a_required_background_worker_is_missing(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "background_worker_heartbeats_required", True)
+    monkeypatch.setattr(
+        api_router_module,
+        "database_health",
+        lambda: {"connected": True, "schemaReady": True},
+    )
+    monkeypatch.setattr(
+        api_router_module,
+        "background_worker_health",
+        lambda: WorkerHealthReport(
+            required=True,
+            healthy=False,
+            backend="database",
+            workers={
+                "meal_analysis": True,
+                "image_retention": False,
+                "food_source_refresh": True,
+            },
+        ),
+    )
+
+    response = TestClient(app).get("/api/v1/health/ready")
+
+    assert response.status_code == 503
+    assert response.json()["backgroundWorkers"] == {
+        "required": True,
+        "healthy": False,
+        "backend": "database",
+        "workers": {
+            "meal_analysis": True,
+            "image_retention": False,
+            "food_source_refresh": True,
+        },
+    }
     assert response.json()["requestId"] == response.headers["x-request-id"]
 
 

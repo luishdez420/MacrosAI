@@ -281,6 +281,111 @@ def test_range_insights_uses_saved_meal_snapshots_and_rejects_invalid_windows() 
         app.dependency_overrides.clear()
 
 
+def test_range_weight_comparison_exposes_its_evidence_and_goal_context() -> None:
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    testing_session = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    Base.metadata.create_all(bind=engine)
+
+    def override_get_db() -> Generator[Session, None, None]:
+        db = testing_session()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_db] = override_get_db
+
+    try:
+        client = TestClient(app)
+        session = client.post(
+            "/api/v1/auth/register",
+            json={
+                "email": "weight-insights@example.com",
+                "password": "local-password-123",
+                "displayName": "Weight insights",
+            },
+        )
+        headers = {"Authorization": f"Bearer {session.json()['token']}"}
+
+        assert client.put(
+            "/api/v1/goals",
+            headers=headers,
+            json={
+                "startsOn": "2026-07-01",
+                "caloriesKcal": 2200,
+                "proteinGrams": 120,
+                "carbohydrateGrams": 250,
+                "fatGrams": 70,
+                "goalDirection": "cut",
+            },
+        ).status_code == 200
+        assert client.put(
+            "/api/v1/goals",
+            headers=headers,
+            json={
+                "startsOn": "2026-07-08",
+                "caloriesKcal": 2400,
+                "proteinGrams": 130,
+                "carbohydrateGrams": 270,
+                "fatGrams": 75,
+                "goalDirection": "gain",
+            },
+        ).status_code == 200
+
+        for logged_on, weight_grams in [
+            ("2026-07-01", 80000),
+            ("2026-07-05", 79700),
+            ("2026-07-10", 79000),
+        ]:
+            assert client.post(
+                "/api/v1/weight",
+                headers=headers,
+                json={"loggedOn": logged_on, "weightGrams": weight_grams},
+            ).status_code == 201
+
+        observed = client.get(
+            "/api/v1/insights/range?startDate=2026-07-01&endDate=2026-07-10",
+            headers=headers,
+        )
+        assert observed.status_code == 200
+        comparison = observed.json()["weightComparison"]
+        assert comparison == {
+            "status": "observed",
+            "trend": "down",
+            "entryCount": 3,
+            "firstLoggedOn": "2026-07-01",
+            "lastLoggedOn": "2026-07-10",
+            "observationDays": 9,
+            "changeGrams": -1000,
+            "goalDirectionContext": "changed",
+            "goalDirections": ["cut", "gain"],
+            "goalRevisionCount": 2,
+        }
+
+        limited = client.get(
+            "/api/v1/insights/range?startDate=2026-07-01&endDate=2026-07-05",
+            headers=headers,
+        )
+        assert limited.status_code == 200
+        assert limited.json()["weightComparison"]["status"] == "limited"
+        assert limited.json()["weightComparison"]["observationDays"] == 4
+
+        insufficient = client.get(
+            "/api/v1/insights/range?startDate=2026-07-09&endDate=2026-07-10",
+            headers=headers,
+        )
+        assert insufficient.status_code == 200
+        assert insufficient.json()["weightComparison"]["status"] == "insufficient_data"
+        assert insufficient.json()["weightComparison"]["entryCount"] == 1
+        assert insufficient.json()["weightComparison"]["trend"] == "unavailable"
+    finally:
+        app.dependency_overrides.clear()
+
+
 def meal_payload(name: str, logged_at: str, calories: float, protein: float) -> dict:
     return {
         "name": name,

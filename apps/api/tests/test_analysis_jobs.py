@@ -18,6 +18,7 @@ from app.models.analysis import AnalysisJob
 from app.models.analysis import AnalysisJobImage
 from app.models.meal import MealImage
 from app.models.user import AuditLog, User, UserPreference
+from app.models.worker import WorkerHeartbeat
 from app.schemas.analysis import MealAnalysisResult, MealAnalysisStatus
 from app.schemas.common import ConfidenceBreakdown, ConfidenceTier, NutrientsPer100g
 from app.services.analysis_jobs import (
@@ -313,6 +314,10 @@ def test_durable_worker_persists_review_result_and_keeps_private_input_through_r
         assert image.deleted_at is None
         assert storage.objects[storage_key] == b"normalized-image"
         assert observed_inputs == [[base64.b64encode(b"normalized-image").decode("ascii")]]
+        heartbeat = check.scalar(
+            select(WorkerHeartbeat).where(WorkerHeartbeat.worker_name == "meal_analysis")
+        )
+        assert heartbeat is not None
     finally:
         check.close()
 

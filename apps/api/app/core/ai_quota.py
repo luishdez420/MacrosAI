@@ -54,6 +54,32 @@ class AiUsageReservation:
     quota: AiQuotaStatus
 
 
+@dataclass(frozen=True)
+class AiUsageAllowance:
+    """Safe owner-facing capacity for one analysis operation.
+
+    This deliberately omits entitlement tier, billing state, request keys, and
+    usage history. It is enough for the app to explain whether a new action can
+    start without turning the quota ledger into a customer-facing audit log.
+    """
+
+    remaining_operations: int | None
+    operation_limit: int | None
+    remaining_images: int | None
+    image_limit: int | None
+    remaining_concurrent: int | None
+    concurrency_limit: int | None
+    available: bool
+    next_availability_at: datetime | None
+
+
+@dataclass(frozen=True)
+class AiUsageSummary:
+    window_days: int
+    meal_analysis: AiUsageAllowance
+    nutrition_label_analysis: AiUsageAllowance
+
+
 def reserve_ai_usage(
     db: Session,
     *,
@@ -240,7 +266,7 @@ def quota_status(
             select(func.coalesce(func.sum(AiUsageRecord.units), 0)).where(
                 AiUsageRecord.user_id == user_id,
                 AiUsageRecord.operation == operation,
-                AiUsageRecord.status.in_((AI_USAGE_RESERVED, AI_USAGE_SETTLED)),
+                active_usage_condition(now),
                 AiUsageRecord.reserved_at >= window_start,
             )
         )
@@ -251,7 +277,7 @@ def quota_status(
             select(func.coalesce(func.sum(AiUsageRecord.units), 0)).where(
                 AiUsageRecord.user_id == user_id,
                 AiUsageRecord.operation == AI_OPERATION_MEAL_ANALYSIS,
-                AiUsageRecord.status.in_((AI_USAGE_RESERVED, AI_USAGE_SETTLED)),
+                active_usage_condition(now),
                 AiUsageRecord.reserved_at >= window_start,
             )
         )
@@ -278,6 +304,143 @@ def quota_status(
     )
 
 
+def get_ai_usage_summary(
+    db: Session,
+    *,
+    user_id: str,
+    now: datetime | None = None,
+) -> AiUsageSummary:
+    """Return the current account's privacy-minimized analysis capacity.
+
+    A missing entitlement is equivalent to the normal free allowance until a
+    first analysis creates its durable entitlement row. Expired reservations
+    are excluded from the read without mutating a ``GET`` request; the worker
+    later records their durable expiration for reconciliation and metrics.
+    """
+
+    current_time = now or datetime.now(UTC)
+    entitlement = db.scalar(select(AiEntitlement).where(AiEntitlement.user_id == user_id))
+    tier = effective_tier(entitlement, current_time) if entitlement else "free"
+    active = entitlement is None or entitlement.status == "active"
+    return AiUsageSummary(
+        window_days=settings.ai_quota_window_days,
+        meal_analysis=usage_allowance(
+            db,
+            user_id=user_id,
+            operation=AI_OPERATION_MEAL_ANALYSIS,
+            tier=tier,
+            active=active,
+            now=current_time,
+        ),
+        nutrition_label_analysis=usage_allowance(
+            db,
+            user_id=user_id,
+            operation=AI_OPERATION_LABEL_ANALYSIS,
+            tier=tier,
+            active=active,
+            now=current_time,
+        ),
+    )
+
+
+def usage_allowance(
+    db: Session,
+    *,
+    user_id: str,
+    operation: str,
+    tier: str,
+    active: bool,
+    now: datetime,
+) -> AiUsageAllowance:
+    status = quota_status(db, user_id=user_id, operation=operation, tier=tier, now=now)
+    operation_limit = operation_limit_for(tier, operation)
+    image_limit = image_limit_for(tier) if operation == AI_OPERATION_MEAL_ANALYSIS else None
+    concurrency_limit = concurrent_limit_for(tier)
+    available = active and allowance_can_cover(status, units=1, operation=operation)
+    if status.remaining_concurrent is not None and status.remaining_concurrent < 1:
+        available = False
+
+    return AiUsageAllowance(
+        remaining_operations=status.remaining_operations,
+        operation_limit=operation_limit,
+        remaining_images=status.remaining_images,
+        image_limit=image_limit,
+        remaining_concurrent=status.remaining_concurrent,
+        concurrency_limit=concurrency_limit,
+        available=available,
+        next_availability_at=(
+            next_ai_usage_availability(
+                db,
+                user_id=user_id,
+                operation=operation,
+                status=status,
+                active=active,
+                now=now,
+            )
+            if not available
+            else None
+        ),
+    )
+
+
+def next_ai_usage_availability(
+    db: Session,
+    *,
+    user_id: str,
+    operation: str,
+    status: AiQuotaStatus,
+    active: bool,
+    now: datetime,
+) -> datetime | None:
+    """Return the earliest *possible* capacity recovery without a false reset.
+
+    Allowances use a rolling window, so there is no single account reset date.
+    The returned time is intentionally conservative and becomes ``None`` for a
+    disabled account because a policy change, not time, is required there.
+    """
+
+    if not active:
+        return None
+
+    candidates: list[datetime] = []
+    if status.remaining_concurrent is not None and status.remaining_concurrent < 1:
+        active_reservation = db.scalar(
+            select(func.min(AiUsageRecord.reservation_expires_at)).where(
+                AiUsageRecord.user_id == user_id,
+                AiUsageRecord.status == AI_USAGE_RESERVED,
+                AiUsageRecord.reservation_expires_at > now,
+            )
+        )
+        if active_reservation:
+            candidates.append(as_utc(active_reservation))
+
+    operation_exhausted = status.remaining_operations is not None and status.remaining_operations < 1
+    image_exhausted = status.remaining_images is not None and status.remaining_images < 1
+    if operation_exhausted or image_exhausted:
+        window_start = now - timedelta(days=settings.ai_quota_window_days)
+        earliest_recorded_usage = db.scalar(
+            select(func.min(AiUsageRecord.reserved_at)).where(
+                AiUsageRecord.user_id == user_id,
+                AiUsageRecord.operation == operation,
+                active_usage_condition(now),
+                AiUsageRecord.reserved_at >= window_start,
+            )
+        )
+        if earliest_recorded_usage:
+            candidates.append(as_utc(earliest_recorded_usage) + timedelta(days=settings.ai_quota_window_days))
+
+    return min(candidates) if candidates else None
+
+
+def active_usage_condition(now: datetime):
+    """Count settled and currently reserved work, but never stale leases."""
+
+    return (AiUsageRecord.status == AI_USAGE_SETTLED) | (
+        (AiUsageRecord.status == AI_USAGE_RESERVED)
+        & (AiUsageRecord.reservation_expires_at > now)
+    )
+
+
 def get_or_create_entitlement(db: Session, user_id: str) -> AiEntitlement:
     entitlement = db.scalar(select(AiEntitlement).where(AiEntitlement.user_id == user_id).with_for_update())
     if entitlement:
@@ -297,6 +460,51 @@ def reconcile_expired_reservations(db: Session, *, user_id: str, now: datetime) 
             AiUsageRecord.reservation_expires_at <= now,
         )
         .values(status=AI_USAGE_EXPIRED, refund_reason="reservation_expired")
+        .execution_options(synchronize_session=False)
+    )
+    return int(result.rowcount or 0)
+
+
+def expire_stale_ai_usage_reservations(
+    db: Session,
+    *,
+    now: datetime | None = None,
+    limit: int = 500,
+) -> int:
+    """Expire one bounded oldest-first batch of abandoned AI reservations.
+
+    Request paths reconcile an individual account before charging it again.
+    This worker-facing sweep releases capacity even when that account never
+    returns, without reading prompts, image data, or any customer content.
+    """
+
+    cutoff = now or datetime.now(UTC)
+    ids = list(
+        db.scalars(
+            select(AiUsageRecord.id)
+            .where(
+                AiUsageRecord.status == AI_USAGE_RESERVED,
+                AiUsageRecord.reservation_expires_at <= cutoff,
+            )
+            .order_by(AiUsageRecord.reservation_expires_at.asc(), AiUsageRecord.id.asc())
+            .limit(limit)
+        ).all()
+    )
+    if not ids:
+        return 0
+
+    result = db.execute(
+        update(AiUsageRecord)
+        .where(
+            AiUsageRecord.id.in_(ids),
+            AiUsageRecord.status == AI_USAGE_RESERVED,
+            AiUsageRecord.reservation_expires_at <= cutoff,
+        )
+        .values(
+            status=AI_USAGE_EXPIRED,
+            refund_reason="reservation_expired",
+            updated_at=cutoff,
+        )
         .execution_options(synchronize_session=False)
     )
     return int(result.rowcount or 0)

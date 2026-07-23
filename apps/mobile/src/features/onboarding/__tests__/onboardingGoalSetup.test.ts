@@ -16,6 +16,7 @@ describe("createOnboardingGoalSetup", () => {
       ok: true,
       goal: {
         startsOn: "2026-07-13",
+        goalDirection: "maintain",
         fiberGrams: 28,
         sodiumMilligrams: 2300,
       },

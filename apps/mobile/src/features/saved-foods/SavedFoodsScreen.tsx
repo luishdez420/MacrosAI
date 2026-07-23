@@ -21,7 +21,10 @@ import { foodDetailHref } from "../food-detail/foodDetailLinks";
 import { servingSummary } from "../food-logging/foodLogging";
 import {
   buildSavedFoodRemoveActions,
+  filterSavedFoodsByTag,
   filterSavedFoods,
+  parseSavedFoodTags,
+  savedFoodTags,
   savedFoodFilterLabel,
   savedFoodSortLabel,
   sortSavedFoods,
@@ -37,6 +40,9 @@ export function SavedFoodsScreen() {
   const [searchQuery, setSearchQuery] = useState("");
   const [activeFilter, setActiveFilter] = useState<SavedFoodFilter>("all");
   const [activeSort, setActiveSort] = useState<SavedFoodSort>("default");
+  const [activeTag, setActiveTag] = useState<string | null>(null);
+  const [editingTagsForFoodId, setEditingTagsForFoodId] = useState<string | null>(null);
+  const [tagDraft, setTagDraft] = useState("");
   const favorites = useQuery({
     queryKey: ["foods", "favorites"],
     queryFn: () => api.getFavoriteFoods(50),
@@ -51,10 +57,12 @@ export function SavedFoodsScreen() {
   });
   const favoriteIds = new Set((favorites.data?.items ?? []).map((item) => item.id));
   const recentItems = (recents.data?.items ?? []).filter((item) => !favoriteIds.has(item.id));
-  const favoriteItems = sortSavedFoods(
+  const filteredFavoriteItems = sortSavedFoods(
     filterSavedFoods(favorites.data?.items ?? [], searchQuery),
     activeSort
   );
+  const availableTags = savedFoodTags(favorites.data?.items ?? []);
+  const favoriteItems = filterSavedFoodsByTag(filteredFavoriteItems, activeTag);
   const filteredRecentItems = sortSavedFoods(
     filterSavedFoods(recentItems, searchQuery),
     activeSort
@@ -96,6 +104,24 @@ export function SavedFoodsScreen() {
       await queryClient.invalidateQueries({ queryKey: ["foods", "recent"] });
     },
   });
+  const updateTagsMutation = useMutation({
+    mutationFn: ({ foodId, tags }: { foodId: string; tags: string[] }) =>
+      api.updateFavoriteFoodTags(foodId, { tags }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["foods", "favorites"] });
+      setEditingTagsForFoodId(null);
+      setTagDraft("");
+    },
+  });
+
+  function beginTagEditing(item: FoodSearchResult) {
+    setEditingTagsForFoodId(item.id);
+    setTagDraft((item.savedTags ?? []).join(", "));
+  }
+
+  function saveTags(foodId: string) {
+    updateTagsMutation.mutate({ foodId, tags: parseSavedFoodTags(tagDraft) });
+  }
 
   function confirmBulkRemove(kind: SavedFoodRemoveAction["kind"], items: FoodSearchResult[]) {
     const actions = buildSavedFoodRemoveActions(kind, items);
@@ -193,6 +219,50 @@ export function SavedFoodsScreen() {
         </View>
       </Card>
 
+      {availableTags.length ? (
+        <Card>
+          <SectionHeader title="Favorite tags" meta="Private to you" />
+          <Text style={[styles.tagHint, themed.muted]}>
+            Filter favorites by the labels you use to organize repeat foods.
+          </Text>
+          <View style={styles.filterRow}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Show favorites with any tag"
+              accessibilityState={{ selected: activeTag === null }}
+              style={[
+                styles.tagFilterChip,
+                themed.controlSurface,
+                activeTag === null ? styles.activeFilterChip : undefined,
+              ]}
+              onPress={() => setActiveTag(null)}
+            >
+              <Text style={[styles.filterChipText, { color: activeTag === null ? palette.onPrimary : palette.ink }]}>
+                All tags
+              </Text>
+            </Pressable>
+            {availableTags.map((tag) => (
+              <Pressable
+                key={tag}
+                accessibilityRole="button"
+                accessibilityLabel={`Filter favorites by ${tag}`}
+                accessibilityState={{ selected: activeTag === tag }}
+                style={[
+                  styles.tagFilterChip,
+                  themed.controlSurface,
+                  activeTag === tag ? styles.activeFilterChip : undefined,
+                ]}
+                onPress={() => setActiveTag(activeTag === tag ? null : tag)}
+              >
+                <Text style={[styles.filterChipText, { color: activeTag === tag ? palette.onPrimary : palette.ink }]}>
+                  {tag}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+        </Card>
+      ) : null}
+
       {removeMutation.error ? (
         <InlineNotice
           title="Saved food was not updated"
@@ -205,6 +275,14 @@ export function SavedFoodsScreen() {
         <InlineNotice
           title="Saved foods were not cleared"
           body={bulkRemoveMutation.error.message}
+          tone="warning"
+        />
+      ) : null}
+
+      {updateTagsMutation.error ? (
+        <InlineNotice
+          title="Favorite tags were not updated"
+          body={updateTagsMutation.error.message}
           tone="warning"
         />
       ) : null}
@@ -226,6 +304,16 @@ export function SavedFoodsScreen() {
           onBulkRemove={() => confirmBulkRemove("favorite", favoriteItems)}
           removing={removeMutation.isPending}
           bulkRemoving={bulkRemoveMutation.isPending}
+          editingTagsForFoodId={editingTagsForFoodId}
+          tagDraft={tagDraft}
+          onTagDraftChange={setTagDraft}
+          onBeginTagEditing={beginTagEditing}
+          onCancelTagEditing={() => {
+            setEditingTagsForFoodId(null);
+            setTagDraft("");
+          }}
+          onSaveTags={saveTags}
+          tagsSaving={updateTagsMutation.isPending}
         />
       ) : null}
 
@@ -293,6 +381,13 @@ function SavedFoodSection({
   actionHref,
   removing,
   bulkRemoving,
+  editingTagsForFoodId,
+  tagDraft,
+  onTagDraftChange,
+  onBeginTagEditing,
+  onCancelTagEditing,
+  onSaveTags,
+  tagsSaving,
 }: {
   title: string;
   meta: string;
@@ -306,6 +401,13 @@ function SavedFoodSection({
   actionHref?: (foodId: string) => string;
   removing: boolean;
   bulkRemoving: boolean;
+  editingTagsForFoodId?: string | null;
+  tagDraft?: string;
+  onTagDraftChange?: (value: string) => void;
+  onBeginTagEditing?: (item: FoodSearchResult) => void;
+  onCancelTagEditing?: () => void;
+  onSaveTags?: (foodId: string) => void;
+  tagsSaving?: boolean;
 }) {
   const { palette } = useTheme();
   const themed = savedFoodsThemeStyles(palette);
@@ -340,6 +442,13 @@ function SavedFoodSection({
                     tone={item.recordConfidence === "low" ? "warning" : "success"}
                   />
                 </View>
+                {(item.savedTags ?? []).length ? (
+                  <View accessibilityLabel="Private favorite tags" style={styles.badgeRow}>
+                    {(item.savedTags ?? []).map((tag) => (
+                      <StatusPill key={tag} label={tag} tone="neutral" />
+                    ))}
+                  </View>
+                ) : null}
               </View>
               <View style={styles.actions}>
                 <Link href={foodDetailHref(item.id)} asChild>
@@ -362,14 +471,58 @@ function SavedFoodSection({
                     </Pressable>
                   </Link>
                 ) : (
-                  <ActionButton
-                    label={removing ? "Updating..." : actionLabel}
-                    variant="secondary"
-                    onPress={() => onRemove?.(item.id)}
-                    disabled={removing}
-                  />
+                  <>
+                    {onBeginTagEditing ? (
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel={`Organize tags for ${readableFoodName(item.displayName)}`}
+                        style={[styles.sourceButton, themed.subsurface]}
+                        onPress={() => onBeginTagEditing(item)}
+                      >
+                        <Text style={[styles.sourceButtonText, themed.actionText]}>Tags</Text>
+                      </Pressable>
+                    ) : null}
+                    <ActionButton
+                      label={removing ? "Updating..." : actionLabel}
+                      variant="secondary"
+                      onPress={() => onRemove?.(item.id)}
+                      disabled={removing}
+                    />
+                  </>
                 )}
               </View>
+              {editingTagsForFoodId === item.id ? (
+                <View style={[styles.tagEditor, themed.subsurface]}>
+                  <Text style={[styles.tagEditorLabel, themed.ink]}>Private tags</Text>
+                  <TextInput
+                    accessibilityLabel={`Private tags for ${readableFoodName(item.displayName)}`}
+                    accessibilityHint="Separate up to ten tags with commas."
+                    value={tagDraft}
+                    onChangeText={onTagDraftChange}
+                    placeholder="Breakfast, quick, meal prep"
+                    placeholderTextColor={palette.muted}
+                    style={[styles.tagInput, themed.input]}
+                    autoCapitalize="words"
+                    maxLength={489}
+                  />
+                  <Text style={[styles.tagEditorHint, themed.muted]}>
+                    Only you can see these labels. They do not change the nutrition source.
+                  </Text>
+                  <View style={styles.tagEditorActions}>
+                    <ActionButton
+                      label="Cancel"
+                      variant="secondary"
+                      onPress={onCancelTagEditing}
+                      disabled={tagsSaving}
+                    />
+                    <ActionButton
+                      label={tagsSaving ? "Saving..." : "Save tags"}
+                      onPress={() => onSaveTags?.(item.id)}
+                      disabled={tagsSaving}
+                    />
+                  </View>
+                </View>
+              ) : null}
             </View>
           ))
         ) : (
@@ -453,6 +606,15 @@ const styles = StyleSheet.create({
   sortBlock: {
     gap: spacing.xs,
   },
+  tagHint: {
+    ...typography.caption,
+  },
+  tagFilterChip: {
+    minHeight: 44,
+    justifyContent: "center",
+    borderRadius: 999,
+    paddingHorizontal: spacing.md,
+  },
   sortLabel: {
     ...typography.caption,
     color: colors.muted,
@@ -498,6 +660,27 @@ const styles = StyleSheet.create({
     gap: spacing.xs,
   },
   actions: {
+    gap: spacing.sm,
+  },
+  tagEditor: {
+    gap: spacing.xs,
+    borderRadius: 20,
+    padding: spacing.sm,
+  },
+  tagEditorLabel: {
+    ...typography.caption,
+    fontWeight: "700",
+  },
+  tagInput: {
+    minHeight: 48,
+    borderRadius: 14,
+    paddingHorizontal: spacing.sm,
+  },
+  tagEditorHint: {
+    ...typography.caption,
+  },
+  tagEditorActions: {
+    flexDirection: "row",
     gap: spacing.sm,
   },
   sourceButton: {

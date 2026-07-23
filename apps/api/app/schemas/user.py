@@ -71,6 +71,7 @@ class NutritionGoalRead(ApiModel):
     fat_grams: float
     fiber_grams: float | None = None
     sodium_milligrams: float | None = None
+    goal_direction: Literal["maintain", "cut", "gain"] | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -83,6 +84,7 @@ class NutritionGoalUpdate(ApiModel):
     fat_grams: float = Field(ge=0)
     fiber_grams: float | None = Field(default=None, ge=0)
     sodium_milligrams: float | None = Field(default=None, ge=0)
+    goal_direction: Literal["maintain", "cut", "gain"] | None = None
 
 
 class WeightEntryCreate(ApiModel):

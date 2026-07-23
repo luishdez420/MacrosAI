@@ -48,7 +48,7 @@ describe("DailyDiaryScreen", () => {
   });
 
   it("loads the previous day without changing the current diary route", async () => {
-    mockGetDiary.mockResolvedValue(diaryWithMeal());
+    mockGetDiary.mockResolvedValueOnce(diaryWithMeal()).mockResolvedValueOnce(emptyDiary());
 
     const view = await renderWithQueryClient(<DailyDiaryScreen />);
 
@@ -59,6 +59,7 @@ describe("DailyDiaryScreen", () => {
     });
 
     await waitFor(() => expect(mockGetDiary).toHaveBeenCalledWith("2026-07-11"));
+    expect(await view.findByText("Nothing saved for this day")).toBeTruthy();
   });
 
   it("uses a neutral empty state for a day without meals", async () => {
@@ -101,6 +102,7 @@ function diaryWithMeal(): DiaryDay {
     meals: [
       {
         id: "meal_1",
+        revision: 1,
         name: "Chicken rice bowl",
         mealType: "lunch",
         loggedAt: "2026-07-12T12:30:00.000Z",

@@ -112,6 +112,16 @@ def test_export_returns_only_current_user_data() -> None:
             json=meal_payload("First user banana", "usda:banana-a"),
         )
         assert first_meal.status_code == 201
+        assert client.put(
+            "/api/v1/foods/favorites/usda:banana-a",
+            headers=first_headers,
+        ).status_code == 200
+        tagged_favorite = client.put(
+            "/api/v1/foods/favorites/usda:banana-a/tags",
+            headers=first_headers,
+            json={"tags": ["Breakfast", "quick"]},
+        )
+        assert tagged_favorite.status_code == 200
 
         second_meal = client.post(
             "/api/v1/meals",
@@ -153,6 +163,7 @@ def test_export_returns_only_current_user_data() -> None:
         assert [entry["milliliters"] for entry in body["hydrationEntries"]] == [1200]
         assert [meal["name"] for meal in body["meals"]] == ["First user banana"]
         assert [recipe["name"] for recipe in body["recipes"]] == ["First user recipe"]
+        assert body["favoriteFoods"][0]["savedTags"] == ["Breakfast", "quick"]
         assert body["recentFoods"][0]["id"] == "usda:banana-a"
         assert all(meal["name"] != "Second user rice" for meal in body["meals"])
 

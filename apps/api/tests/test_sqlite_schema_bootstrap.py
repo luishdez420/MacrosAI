@@ -26,6 +26,7 @@ def test_sqlite_bootstrap_repairs_legacy_users_password_hash_column(tmp_path) ->
         )
         connection.execute(text("CREATE TABLE meal_items (id VARCHAR(36) PRIMARY KEY)"))
         connection.execute(text("CREATE TABLE recipe_items (id VARCHAR(36) PRIMARY KEY)"))
+        connection.execute(text("CREATE TABLE recipes (id VARCHAR(36) PRIMARY KEY)"))
         connection.execute(
             text(
                 """
@@ -50,6 +51,21 @@ def test_sqlite_bootstrap_repairs_legacy_users_password_hash_column(tmp_path) ->
                     image_retention_days INTEGER NOT NULL,
                     created_at DATETIME,
                     updated_at DATETIME
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE nutrition_goals (
+                    id VARCHAR(36) PRIMARY KEY,
+                    user_id VARCHAR(36) NOT NULL,
+                    starts_on DATE NOT NULL,
+                    calories_kcal FLOAT NOT NULL,
+                    protein_grams FLOAT NOT NULL,
+                    carbohydrate_grams FLOAT NOT NULL,
+                    fat_grams FLOAT NOT NULL
                 )
                 """
             )
@@ -84,8 +100,18 @@ def test_sqlite_bootstrap_repairs_legacy_users_password_hash_column(tmp_path) ->
     assert "sort_order" in {
         column["name"] for column in inspect(database_engine).get_columns("recipe_items")
     }
+    assert "folder_id" in {
+        column["name"] for column in inspect(database_engine).get_columns("recipes")
+    }
+    assert "is_favorite" in {
+        column["name"] for column in inspect(database_engine).get_columns("recipes")
+    }
+    assert "recipe_folders" in inspect(database_engine).get_table_names()
     assert "goal_direction" in {
         column["name"] for column in inspect(database_engine).get_columns("user_preferences")
+    }
+    assert "goal_direction" in {
+        column["name"] for column in inspect(database_engine).get_columns("nutrition_goals")
     }
     assert "onboarding_goal" in {
         column["name"] for column in inspect(database_engine).get_columns("user_preferences")
@@ -132,6 +158,9 @@ def test_sqlite_bootstrap_repairs_legacy_users_password_hash_column(tmp_path) ->
     }
     assert "goal_direction" in {
         column["name"] for column in inspect(database_engine).get_columns("user_preferences")
+    }
+    assert "goal_direction" in {
+        column["name"] for column in inspect(database_engine).get_columns("nutrition_goals")
     }
     assert "onboarding_goal" in {
         column["name"] for column in inspect(database_engine).get_columns("user_preferences")
@@ -181,10 +210,11 @@ def test_database_health_reports_missing_required_columns(monkeypatch, tmp_path)
         "missingTables": [
             "audit_deliveries",
             "food_source_records",
-            "meal_items",
-            "meals",
-            "user_preferences",
-        ],
+                "meal_items",
+                "meals",
+                "user_preferences",
+                "worker_heartbeats",
+            ],
         "missingColumns": {
             "auth_sessions": ["device_label", "expires_at", "refresh_token_hash"],
             "users": ["password_hash"],

@@ -1,6 +1,6 @@
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -8,7 +8,10 @@ from app.core.audit import record_audit_event
 from app.db.base import Base
 from app.models.meal import Meal, MealImage
 from app.models.analysis import AnalysisJob, AnalysisJobImage
+from app.models.idempotency import IdempotencyRecord
+from app.models.usage import AiUsageRecord
 from app.models.user import AuditDelivery, AuditLog, User
+from app.models.worker import WorkerHeartbeat
 from app.services.audit_lifecycle import expire_audit_logs
 from app.services.image_lifecycle import (
     delete_analysis_job_images,
@@ -123,6 +126,10 @@ def test_retention_worker_processes_due_images_and_closes_its_session() -> None:
 
     assert run_once(session_factory=factory, storage=WorkingStorage()) == 1
     assert factory.closed is True
+    heartbeat = db.scalar(
+        select(WorkerHeartbeat).where(WorkerHeartbeat.worker_name == "image_retention")
+    )
+    assert heartbeat is not None
 
 
 def test_retention_worker_expires_due_analysis_jobs() -> None:
@@ -141,6 +148,68 @@ def test_retention_worker_expires_due_analysis_jobs() -> None:
 
     assert run_once(session_factory=SessionFactory(db), storage=WorkingStorage()) == 0
     assert db.get(AnalysisJob, job_id).status == "expired"
+
+
+def test_retention_worker_expires_idempotency_records_in_a_bounded_batch() -> None:
+    db = session()
+    now = datetime.now(UTC)
+    user = User(email="idempotency-retention@example.com")
+    db.add(user)
+    db.flush()
+    expired_records = [
+        IdempotencyRecord(
+            user_id=user.id,
+            operation="meal.create",
+            idempotency_key=f"expired-{index}",
+            request_fingerprint=f"fingerprint-{index}",
+            status="completed",
+            response_status=201,
+            response_body_json={"id": str(index)},
+            expires_at=now - timedelta(seconds=index + 1),
+        )
+        for index in range(2)
+    ]
+    retained_record = IdempotencyRecord(
+        user_id=user.id,
+        operation="meal.create",
+        idempotency_key="retained",
+        request_fingerprint="retained-fingerprint",
+        status="completed",
+        response_status=201,
+        response_body_json={"id": "retained"},
+        expires_at=now + timedelta(hours=1),
+    )
+    db.add_all([*expired_records, retained_record])
+    db.commit()
+    expired_ids = [record.id for record in expired_records]
+    retained_id = retained_record.id
+
+    assert run_once(session_factory=SessionFactory(db), storage=WorkingStorage()) == 0
+    assert all(db.get(IdempotencyRecord, record_id) is None for record_id in expired_ids)
+    assert db.get(IdempotencyRecord, retained_id) is not None
+
+
+def test_retention_worker_expires_abandoned_ai_quota_reservations() -> None:
+    db = session()
+    now = datetime.now(UTC)
+    user = User(email="quota-worker@example.com")
+    db.add(user)
+    db.flush()
+    expired = AiUsageRecord(
+        user_id=user.id,
+        operation="meal-analysis.create",
+        entitlement_tier="free",
+        units=1,
+        status="reserved",
+        reserved_at=now - timedelta(minutes=20),
+        reservation_expires_at=now - timedelta(seconds=1),
+    )
+    db.add(expired)
+    db.commit()
+    record_id = expired.id
+
+    assert run_once(session_factory=SessionFactory(db), storage=WorkingStorage()) == 0
+    assert db.get(AiUsageRecord, record_id).status == "expired"
 
 
 def test_audit_retention_deletes_only_expired_minimal_events_in_bounded_batches() -> None:

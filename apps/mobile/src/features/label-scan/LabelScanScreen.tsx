@@ -13,6 +13,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 
 import { colors, radii, spacing, typography, type ThemePalette } from "@living-nutrition/design-tokens";
+import { AnalysisAllowanceNotice } from "../../shared/components/AnalysisAllowanceNotice";
 import {
   ActionButton,
   Card,
@@ -209,6 +210,7 @@ export function LabelScanScreen() {
           }
           tone={analysisError ? "warning" : "neutral"}
         />
+        <AnalysisAllowanceNotice kind="label" />
 
         <View style={[styles.bottomBar, themed.bottomBar]}>
           {labelUri ? (

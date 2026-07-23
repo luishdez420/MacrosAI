@@ -101,6 +101,7 @@ function diary(): DiaryDay {
     meals: [
       {
         id: "meal_1",
+        revision: 1,
         name: "Chicken bowl",
         mealType: "lunch",
         loggedAt: "2026-07-13T12:00:00Z",

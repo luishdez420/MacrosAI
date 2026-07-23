@@ -52,6 +52,7 @@ export function createOnboardingGoalSetup(input: OnboardingGoalSetupInput): Onbo
       fatGrams: recommendation.fatGrams,
       fiberGrams: 28,
       sodiumMilligrams: 2300,
+      goalDirection: input.direction,
     },
     explanation: recommendation.explanation,
   };

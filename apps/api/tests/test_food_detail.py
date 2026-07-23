@@ -12,6 +12,7 @@ from app.api.v1.food_routes import (
     persist_duplicate_nutrition_conflicts,
     refresh_retry_delay_seconds,
 )
+from app.core.auth import CurrentUser, ensure_current_user
 from app.core.metrics import metrics
 from app.core.config import settings
 from app.db.base import Base
@@ -30,6 +31,20 @@ from app.nutrition.providers.e2e_fixture import (
 from app.schemas.common import ConfidenceTier, NutrientsPer100g
 from app.schemas.food import FoodSearchResponse, FoodSearchResult, ProviderName
 import app.models as _models  # noqa: F401
+
+
+def test_food_search_requires_an_authenticated_account_outside_development_mode(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(settings, "allow_dev_auth", False)
+
+    response = TestClient(app).get(
+        "/api/v1/foods/search",
+        params={"query": "banana"},
+    )
+
+    assert response.status_code == 401
+    assert response.json()["error"]["message"] == "Authentication is required."
 
 
 def test_get_food_detail_returns_stored_record_and_provider_id_lookup() -> None:
@@ -119,20 +134,29 @@ def test_search_maps_fixture_provider_outage_to_a_correlated_service_unavailable
 
 def test_search_exposes_fixture_rate_limit_with_the_normal_error_envelope(monkeypatch) -> None:
     monkeypatch.setattr(settings, "e2e_fixture_mode", True)
-    client = TestClient(app)
+    app.dependency_overrides[ensure_current_user] = lambda: CurrentUser(
+        id="00000000-0000-4000-8000-000000000001",
+        auth_scheme="test",
+    )
 
-    response = client.get("/api/v1/foods/search", params={"query": E2E_RATE_LIMIT_QUERY})
+    try:
+        response = TestClient(app).get(
+            "/api/v1/foods/search",
+            params={"query": E2E_RATE_LIMIT_QUERY},
+        )
 
-    assert response.status_code == 429
-    assert response.headers["retry-after"] == "1"
-    request_id = response.headers["x-request-id"]
-    assert response.json() == {
-        "error": {
-            "message": "Too many requests. Please wait and try again.",
-            "code": "rate_limited",
-            "requestId": request_id,
+        assert response.status_code == 429
+        assert response.headers["retry-after"] == "1"
+        request_id = response.headers["x-request-id"]
+        assert response.json() == {
+            "error": {
+                "message": "Too many requests. Please wait and try again.",
+                "code": "rate_limited",
+                "requestId": request_id,
+            }
         }
-    }
+    finally:
+        app.dependency_overrides.pop(ensure_current_user, None)
 
 
 def test_get_food_detail_flags_stale_cached_provider_record() -> None:
@@ -486,9 +510,12 @@ def test_custom_foods_do_not_leak_through_shared_search_or_source_actions() -> N
         assert created.status_code == 201
         food_id = created.json()["id"]
 
-        # Public provider search must never return another account's custom
+        # Shared provider search must never return another account's custom
         # record, even when it shares the exact display name.
-        search = client.get("/api/v1/foods/search?query=Private%20family%20granola")
+        search = client.get(
+            "/api/v1/foods/search?query=Private%20family%20granola",
+            headers=other_headers,
+        )
         assert search.status_code == 200
         assert search.json()["items"] == []
 
@@ -1047,6 +1074,57 @@ def test_favorite_foods_can_add_list_and_remove_provider_backed_record() -> None
         favorites_after_remove = client.get("/api/v1/foods/favorites", headers=headers)
         assert favorites_after_remove.status_code == 200
         assert favorites_after_remove.json()["items"] == []
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_favorite_food_tags_are_private_normalized_and_returned_with_favorites() -> None:
+    engine, TestingSessionLocal = create_test_session_factory()
+    Base.metadata.create_all(bind=engine)
+    app.dependency_overrides[get_db] = override_db(TestingSessionLocal)
+    app.dependency_overrides[get_provider_registry] = lambda: FakeProviderRegistry()
+
+    try:
+        client = TestClient(app)
+        owner = client.post(
+            "/api/v1/auth/register",
+            json={
+                "email": "favorite-tags-owner@example.com",
+                "password": "local-password-123",
+                "displayName": "Favorite Tags Owner",
+            },
+        )
+        other = client.post(
+            "/api/v1/auth/register",
+            json={
+                "email": "favorite-tags-other@example.com",
+                "password": "local-password-123",
+                "displayName": "Favorite Tags Other",
+            },
+        )
+        owner_headers = {"Authorization": f"Bearer {owner.json()['token']}"}
+        other_headers = {"Authorization": f"Bearer {other.json()['token']}"}
+
+        assert client.put("/api/v1/foods/favorites/usda:999", headers=owner_headers).status_code == 200
+        tagged = client.put(
+            "/api/v1/foods/favorites/usda:999/tags",
+            headers=owner_headers,
+            json={"tags": ["Breakfast", "quick", " breakfast "]},
+        )
+        assert tagged.status_code == 200
+        assert tagged.json()["savedTags"] == ["Breakfast", "quick"]
+
+        favorites = client.get("/api/v1/foods/favorites", headers=owner_headers)
+        assert favorites.status_code == 200
+        assert favorites.json()["items"][0]["savedTags"] == ["Breakfast", "quick"]
+
+        denied = client.put(
+            "/api/v1/foods/favorites/usda:999/tags",
+            headers=other_headers,
+            json={"tags": ["Other account"]},
+        )
+        assert denied.status_code == 404
+        assert client.get("/api/v1/foods/favorites", headers=other_headers).json()["items"] == []
     finally:
         app.dependency_overrides.clear()
 

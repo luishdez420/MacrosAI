@@ -77,6 +77,50 @@ describe("API client session refresh", () => {
     expect(refreshAuthToken).not.toHaveBeenCalled();
   });
 
+  it("reads the authenticated privacy-minimized analysis allowance", async () => {
+    const fetchMock = jest.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          windowDays: 30,
+          mealAnalysis: {
+            remainingOperations: 4,
+            operationLimit: 20,
+            remainingImages: 9,
+            imageLimit: 40,
+            remainingConcurrent: 1,
+            concurrencyLimit: 1,
+            available: true,
+            nextAvailabilityAt: null,
+          },
+          nutritionLabelAnalysis: {
+            remainingOperations: 2,
+            operationLimit: 10,
+            remainingImages: null,
+            imageLimit: null,
+            remainingConcurrent: 1,
+            concurrencyLimit: 1,
+            available: true,
+            nextAvailabilityAt: null,
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      )
+    );
+    global.fetch = fetchMock as unknown as typeof fetch;
+    const client = createApiClient({
+      baseUrl: "http://api.example/api/v1",
+      getAuthToken: async () => "current-access-token",
+    });
+
+    const allowance = await client.getAiUsageSummary();
+
+    expect(allowance.mealAnalysis.remainingOperations).toBe(4);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("http://api.example/api/v1/account/ai-usage");
+    expect(fetchMock.mock.calls[0]?.[1]?.headers).toMatchObject({
+      Authorization: "Bearer current-access-token",
+    });
+  });
+
   it("sends the authenticated current and replacement password without attempting a refresh", async () => {
     const fetchMock = jest.fn().mockResolvedValue(
       new Response(
@@ -240,6 +284,44 @@ describe("API client session refresh", () => {
 
     expect(fetchMock.mock.calls[0]?.[1]?.headers).toMatchObject({
       "Idempotency-Key": "meal-sync-001",
+    });
+  });
+
+  it("forwards a caller-owned idempotency key when saving a weight entry", async () => {
+    const fetchMock = jest.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: "weight_1",
+          loggedOn: "2026-07-21",
+          weightGrams: 80000,
+          notes: null,
+          createdAt: "2026-07-21T12:00:00Z",
+        }),
+        { status: 201, headers: { "Content-Type": "application/json" } }
+      )
+    );
+    global.fetch = fetchMock as unknown as typeof fetch;
+    const client = createApiClient({ baseUrl: "http://api.example/api/v1" });
+
+    await client.saveWeightEntry(
+      { loggedOn: "2026-07-21", weightGrams: 80000, notes: null },
+      { idempotencyKey: "weight-save-001" }
+    );
+
+    expect(fetchMock.mock.calls[0]?.[1]?.headers).toMatchObject({
+      "Idempotency-Key": "weight-save-001",
+    });
+  });
+
+  it("sends the saved-meal revision as an If-Match precondition", async () => {
+    const fetchMock = jest.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+    const client = createApiClient({ baseUrl: "http://api.example/api/v1" });
+
+    await client.updateMeal("meal_1", { name: "Updated lunch" }, { revision: 4 });
+
+    expect(fetchMock.mock.calls[0]?.[1]?.headers).toMatchObject({
+      "If-Match": '"4"',
     });
   });
 });

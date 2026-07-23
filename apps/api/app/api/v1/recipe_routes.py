@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
-from sqlalchemy import select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
@@ -18,9 +18,18 @@ from app.core.idempotency import (
 )
 from app.db.session import get_db
 from app.models.meal import Meal, MealItem
-from app.models.recipe import Recipe, RecipeItem
+from app.models.recipe import Recipe, RecipeFolder, RecipeItem, RecipeTag, RecipeTagAssignment
 from app.schemas.meal import MealItemCreate, MealItemRead
-from app.schemas.recipe import RecipeCreate, RecipeLogResult, RecipeRead, RecipeUpdate
+from app.schemas.recipe import (
+    RecipeCreate,
+    RecipeFolderCreate,
+    RecipeFolderRead,
+    RecipeFolderUpdate,
+    RecipeLogResult,
+    RecipeRead,
+    RecipeTagsUpdate,
+    RecipeUpdate,
+)
 
 router = APIRouter()
 
@@ -50,6 +59,8 @@ def create_recipe(
         name=recipe.name,
         meal_type=recipe.meal_type.value,
         notes=recipe.notes,
+        folder_id=resolve_recipe_folder_id(db, recipe.folder_id, current_user.id),
+        is_favorite=recipe.is_favorite,
     )
     append_recipe_items(persisted, recipe.items)
     db.add(persisted)
@@ -88,7 +99,86 @@ def list_recipes(
     current_user: CurrentUser = Depends(ensure_current_user),
 ) -> list[RecipeRead]:
     recipes = db.scalars(recipe_query(current_user.id).order_by(Recipe.updated_at.desc())).all()
-    return [recipe_to_read(recipe) for recipe in recipes]
+    tags = recipe_tags_by_recipe_id(db, current_user.id, [recipe.id for recipe in recipes])
+    return [recipe_to_read(recipe, tags.get(recipe.id, [])) for recipe in recipes]
+
+
+@router.get("/folders", response_model=list[RecipeFolderRead])
+def list_recipe_folders(
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(ensure_current_user),
+) -> list[RecipeFolderRead]:
+    folders = db.scalars(
+        select(RecipeFolder)
+        .where(RecipeFolder.user_id == current_user.id)
+        .order_by(func.lower(RecipeFolder.name), RecipeFolder.created_at)
+    ).all()
+    return [recipe_folder_to_read(folder) for folder in folders]
+
+
+@router.post("/folders", response_model=RecipeFolderRead, status_code=status.HTTP_201_CREATED)
+def create_recipe_folder(
+    folder_input: RecipeFolderCreate,
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(ensure_current_user),
+) -> RecipeFolderRead:
+    existing = db.scalar(
+        select(RecipeFolder).where(
+            RecipeFolder.user_id == current_user.id,
+            func.lower(RecipeFolder.name) == folder_input.name.lower(),
+        )
+    )
+    if existing:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A folder with that name already exists.")
+
+    folder = RecipeFolder(user_id=current_user.id, name=folder_input.name)
+    db.add(folder)
+    db.commit()
+    db.refresh(folder)
+    return recipe_folder_to_read(folder)
+
+
+@router.patch("/folders/{folder_id}", response_model=RecipeFolderRead)
+def update_recipe_folder(
+    folder_id: str,
+    folder_input: RecipeFolderUpdate,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(ensure_current_user),
+) -> RecipeFolderRead:
+    folder = get_recipe_folder_or_404(db, folder_id, current_user.id, request=request)
+    duplicate = db.scalar(
+        select(RecipeFolder).where(
+            RecipeFolder.user_id == current_user.id,
+            func.lower(RecipeFolder.name) == folder_input.name.lower(),
+            RecipeFolder.id != folder.id,
+        )
+    )
+    if duplicate:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A folder with that name already exists.")
+    folder.name = folder_input.name
+    db.commit()
+    db.refresh(folder)
+    return recipe_folder_to_read(folder)
+
+
+@router.delete("/folders/{folder_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_recipe_folder(
+    folder_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(ensure_current_user),
+) -> None:
+    folder = get_recipe_folder_or_404(db, folder_id, current_user.id, request=request)
+    # Folder cleanup only removes the organizational link. Recipes and their
+    # source-backed snapshots remain available, as do meals previously logged.
+    db.execute(
+        update(Recipe)
+        .where(Recipe.user_id == current_user.id, Recipe.folder_id == folder.id)
+        .values(folder_id=None)
+    )
+    db.delete(folder)
+    db.commit()
 
 
 @router.get("/{recipe_id}", response_model=RecipeRead)
@@ -98,7 +188,9 @@ def get_recipe(
     db: Session = Depends(get_db),
     current_user: CurrentUser = Depends(ensure_current_user),
 ) -> RecipeRead:
-    return recipe_to_read(get_recipe_or_404(db, recipe_id, current_user.id, request=request))
+    recipe = get_recipe_or_404(db, recipe_id, current_user.id, request=request)
+    tags = recipe_tags_by_recipe_id(db, current_user.id, [recipe.id])
+    return recipe_to_read(recipe, tags.get(recipe.id, []))
 
 
 @router.patch("/{recipe_id}", response_model=RecipeRead)
@@ -116,11 +208,48 @@ def update_recipe(
         recipe.meal_type = recipe_update.meal_type.value
     if "notes" in recipe_update.model_fields_set:
         recipe.notes = recipe_update.notes
+    if "folder_id" in recipe_update.model_fields_set:
+        recipe.folder_id = resolve_recipe_folder_id(db, recipe_update.folder_id, current_user.id, request=request)
+    if "is_favorite" in recipe_update.model_fields_set:
+        recipe.is_favorite = bool(recipe_update.is_favorite)
     if recipe_update.items is not None:
         recipe.items.clear()
         append_recipe_items(recipe, recipe_update.items)
     db.commit()
-    return recipe_to_read(get_recipe_or_404(db, recipe_id, current_user.id, request=request))
+    persisted = get_recipe_or_404(db, recipe_id, current_user.id, request=request)
+    tags = recipe_tags_by_recipe_id(db, current_user.id, [persisted.id])
+    return recipe_to_read(persisted, tags.get(persisted.id, []))
+
+
+@router.put("/{recipe_id}/tags", response_model=RecipeRead)
+def replace_recipe_tags(
+    recipe_id: str,
+    tag_update: RecipeTagsUpdate,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(ensure_current_user),
+) -> RecipeRead:
+    """Replace private organization tags without changing recipe snapshots."""
+    recipe = get_recipe_or_404(db, recipe_id, current_user.id, request=request)
+    requested = tag_update.tags
+    existing = db.scalars(select(RecipeTag).where(
+        RecipeTag.user_id == current_user.id,
+        func.lower(RecipeTag.name).in_([tag.lower() for tag in requested]),
+    )).all() if requested else []
+    by_name = {tag.name.casefold(): tag for tag in existing}
+    resolved: list[RecipeTag] = []
+    for name in requested:
+        tag = by_name.get(name.casefold())
+        if tag is None:
+            tag = RecipeTag(user_id=current_user.id, name=name)
+            db.add(tag)
+            db.flush()
+            by_name[name.casefold()] = tag
+        resolved.append(tag)
+    db.execute(delete(RecipeTagAssignment).where(RecipeTagAssignment.recipe_id == recipe.id))
+    db.add_all(RecipeTagAssignment(recipe_id=recipe.id, recipe_tag_id=tag.id) for tag in resolved)
+    db.commit()
+    return recipe_to_read(recipe, [tag.name for tag in resolved])
 
 
 @router.delete("/{recipe_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -180,7 +309,11 @@ def log_recipe(
         if not persisted_meal:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Recipe meal was not saved.")
 
-        response = RecipeLogResult(recipe=recipe_to_read(persisted_recipe), meal=meal_to_read(persisted_meal))
+        tags = recipe_tags_by_recipe_id(db, current_user.id, [persisted_recipe.id])
+        response = RecipeLogResult(
+            recipe=recipe_to_read(persisted_recipe, tags.get(persisted_recipe.id, [])),
+            meal=meal_to_read(persisted_meal),
+        )
         complete_idempotency_key(
             db,
             reservation,
@@ -208,7 +341,7 @@ def log_recipe(
 
 
 def recipe_query(user_id: str):
-    return select(Recipe).options(selectinload(Recipe.items)).where(Recipe.user_id == user_id)
+    return select(Recipe).options(selectinload(Recipe.items), selectinload(Recipe.folder)).where(Recipe.user_id == user_id)
 
 
 def get_recipe_or_404(
@@ -229,6 +362,43 @@ def get_recipe_or_404(
             )
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recipe not found.")
     return recipe
+
+
+def get_recipe_folder_or_404(
+    db: Session,
+    folder_id: str,
+    user_id: str,
+    *,
+    request: Request | None = None,
+) -> RecipeFolder:
+    folder = db.scalar(
+        select(RecipeFolder).where(
+            RecipeFolder.id == folder_id,
+            RecipeFolder.user_id == user_id,
+        )
+    )
+    if not folder:
+        if request:
+            raise_owner_scoped_not_found(
+                db,
+                request=request,
+                user_id=user_id,
+                detail="Recipe folder not found.",
+            )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recipe folder not found.")
+    return folder
+
+
+def resolve_recipe_folder_id(
+    db: Session,
+    folder_id: str | None,
+    user_id: str,
+    *,
+    request: Request | None = None,
+) -> str | None:
+    if folder_id is None:
+        return None
+    return get_recipe_folder_or_404(db, folder_id, user_id, request=request).id
 
 
 def append_recipe_items(recipe: Recipe, items: list[MealItemCreate]) -> None:
@@ -331,13 +501,33 @@ def recipe_item_to_create(item: RecipeItem) -> MealItemCreate:
     )
 
 
-def recipe_to_read(recipe: Recipe) -> RecipeRead:
+def recipe_tags_by_recipe_id(db: Session, user_id: str, recipe_ids: list[str]) -> dict[str, list[str]]:
+    if not recipe_ids:
+        return {}
+    rows = db.execute(
+        select(RecipeTagAssignment.recipe_id, RecipeTag.name)
+        .join(RecipeTag, RecipeTag.id == RecipeTagAssignment.recipe_tag_id)
+        .join(Recipe, Recipe.id == RecipeTagAssignment.recipe_id)
+        .where(Recipe.user_id == user_id, RecipeTagAssignment.recipe_id.in_(recipe_ids))
+        .order_by(RecipeTag.name.asc())
+    ).all()
+    tags = {recipe_id: [] for recipe_id in recipe_ids}
+    for recipe_id, name in rows:
+        tags[recipe_id].append(name)
+    return tags
+
+
+def recipe_to_read(recipe: Recipe, tags: list[str] | None = None) -> RecipeRead:
     return RecipeRead(
         id=recipe.id,
         name=recipe.name,
         meal_type=recipe.meal_type,
         notes=recipe.notes,
         times_used=recipe.times_used,
+        is_favorite=recipe.is_favorite,
+        folder_id=recipe.folder_id,
+        folder_name=recipe.folder.name if recipe.folder else None,
+        tags=tags or [],
         created_at=recipe.created_at,
         updated_at=recipe.updated_at,
         items=[
@@ -376,3 +566,7 @@ def recipe_to_read(recipe: Recipe) -> RecipeRead:
             for item in recipe.items
         ],
     )
+
+
+def recipe_folder_to_read(folder: RecipeFolder) -> RecipeFolderRead:
+    return RecipeFolderRead(id=folder.id, name=folder.name, created_at=folder.created_at)

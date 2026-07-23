@@ -182,6 +182,7 @@ function bananaDetail(): FoodDetail {
 function savedMeal(): MealRead {
   return {
     id: "meal_1",
+    revision: 1,
     name: "Snack",
     loggedAt: "2026-07-09T12:00:00.000Z",
     notes: null,

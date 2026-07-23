@@ -72,6 +72,7 @@ import {
   loggingPreferenceLabel,
   onboardingGoalLabel,
 } from "../../shared/domain/onboardingPersonalization";
+import { actionIdempotencyKey, createMealActionScope } from "../../shared/domain/mealIdempotency";
 
 const directionOptions: Array<{ label: string; value: GoalDirection }> = [
   { label: "Maintain", value: "maintain" },
@@ -104,6 +105,7 @@ export function ProfileScreen() {
   const [onboardingGoal, setOnboardingGoal] = useState<OnboardingGoal>("maintain_rhythm");
   const [loggingPreference, setLoggingPreference] = useState<LoggingPreference>("package_labels");
   const [dietaryPreferences, setDietaryPreferences] = useState<DietaryPreference[]>([]);
+  const [weightActionScope] = useState(() => createMealActionScope("weight"));
   const [personalizationNotice, setPersonalizationNotice] = useState<string | null>(null);
   const clerkEnabled = Boolean(env.clerkPublishableKey);
   const session = useQuery({
@@ -229,7 +231,8 @@ export function ProfileScreen() {
     },
   });
   const weightMutation = useMutation({
-    mutationFn: (payload: WeightEntryCreate) => api.saveWeightEntry(payload),
+    mutationFn: ({ payload, idempotencyKey }: { payload: WeightEntryCreate; idempotencyKey: string }) =>
+      api.saveWeightEntry(payload, { idempotencyKey }),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["weight"] });
       setWeightNote("");
@@ -358,6 +361,7 @@ export function ProfileScreen() {
       fatGrams: recommendation.fatGrams,
       fiberGrams: 28,
       sodiumMilligrams: 2300,
+      goalDirection: direction,
     });
   }
 
@@ -426,10 +430,14 @@ export function ProfileScreen() {
       return;
     }
 
-    weightMutation.mutate({
+    const payload = {
       loggedOn: editingWeightEntry?.loggedOn ?? new Date().toISOString().slice(0, 10),
       weightGrams: normalizedStats.weightKg * 1000,
       notes: weightNote.trim() || null,
+    } satisfies WeightEntryCreate;
+    weightMutation.mutate({
+      payload,
+      idempotencyKey: actionIdempotencyKey(weightActionScope, payload),
     });
   }
 

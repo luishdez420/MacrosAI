@@ -24,6 +24,7 @@ def production_settings(**overrides: object) -> Settings:
         "metrics_enabled": True,
         "metrics_bearer_token": "metrics-token-for-production-tests",
         "sentry_dsn": "https://public@sentry.example.test/123",
+        "background_worker_heartbeats_required": True,
     }
     values.update(overrides)
     return Settings(**values)
@@ -55,6 +56,25 @@ def test_production_settings_require_protected_metrics() -> None:
             rate_limit_backend="redis",
             trusted_proxy_cidrs="10.0.0.0/8",
             metrics_enabled=False,
+        )
+
+
+def test_production_settings_require_background_worker_heartbeats() -> None:
+    with pytest.raises(ValidationError, match="BACKGROUND_WORKER_HEARTBEATS_REQUIRED"):
+        production_settings(
+            rate_limit_backend="redis",
+            trusted_proxy_cidrs="10.0.0.0/8",
+            background_worker_heartbeats_required=False,
+        )
+
+
+def test_production_settings_require_heartbeat_ttl_beyond_worker_polling() -> None:
+    with pytest.raises(ValidationError, match="BACKGROUND_WORKER_HEARTBEAT_TTL_SECONDS"):
+        production_settings(
+            rate_limit_backend="redis",
+            trusted_proxy_cidrs="10.0.0.0/8",
+            background_worker_heartbeat_ttl_seconds=60,
+            food_source_refresh_worker_poll_seconds=60,
         )
 
 

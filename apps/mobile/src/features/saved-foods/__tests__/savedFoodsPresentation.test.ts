@@ -2,7 +2,10 @@ import type { FoodSearchResult } from "@living-nutrition/shared-types";
 
 import {
   buildSavedFoodRemoveActions,
+  filterSavedFoodsByTag,
   filterSavedFoods,
+  parseSavedFoodTags,
+  savedFoodTags,
   savedFoodFilterLabel,
   savedFoodSortLabel,
   sortSavedFoods,
@@ -26,6 +29,20 @@ describe("saved foods presentation", () => {
     const items = [food("food_1", "Banana")];
 
     expect(filterSavedFoods(items, "   ")).toEqual(items);
+  });
+
+  it("includes private favorite tags in search and tag filters without changing other records", () => {
+    const tagged = { ...food("food_1", "Greek yogurt"), savedTags: ["Breakfast", "Quick"] };
+    const untagged = food("food_2", "Chicken breast");
+
+    expect(filterSavedFoods([tagged, untagged], "quick")).toEqual([tagged]);
+    expect(savedFoodTags([tagged, untagged])).toEqual(["Breakfast", "Quick"]);
+    expect(filterSavedFoodsByTag([tagged, untagged], "breakfast")).toEqual([tagged]);
+    expect(parseSavedFoodTags(" Breakfast, quick, breakfast, , Meal prep ")).toEqual([
+      "Breakfast",
+      "quick",
+      "Meal prep",
+    ]);
   });
 
   it("labels saved-food filters", () => {

@@ -54,10 +54,17 @@ export const foodSearchResultSchema = z.object({
   qualityAssessment: foodQualityAssessmentSchema.optional(),
   sourceReference: z.string(),
   retrievedAt: z.string().optional(),
+  // Private organization labels are returned only when this record is one of
+  // the current user's favorites. They never alter provider source data.
+  savedTags: z.array(z.string()).optional(),
 });
 
 export const foodSearchResponseSchema = z.object({
   items: z.array(foodSearchResultSchema),
+});
+
+export const favoriteFoodTagsUpdateSchema = z.object({
+  tags: z.array(z.string().trim().min(1).max(48)).max(10),
 });
 
 export const foodServingOptionSchema = z.object({
@@ -243,6 +250,7 @@ export const mealImageAccessSchema = z.object({
 
 export const mealReadSchema = z.object({
   id: z.string(),
+  revision: z.number().int().positive(),
   name: z.string(),
   mealType: z.enum(["breakfast", "lunch", "dinner", "snack", "meal"]).optional(),
   loggedAt: z.string(),
@@ -257,6 +265,8 @@ export const recipeCreateSchema = z.object({
   name: z.string().min(1).max(256),
   mealType: z.enum(["breakfast", "lunch", "dinner", "snack", "meal"]).optional(),
   notes: z.string().nullable().optional(),
+  folderId: z.string().nullable().optional(),
+  isFavorite: z.boolean().optional(),
   items: z.array(mealItemCreateSchema).min(1),
 });
 
@@ -264,7 +274,25 @@ export const recipeUpdateSchema = z.object({
   name: z.string().min(1).max(256).optional(),
   mealType: z.enum(["breakfast", "lunch", "dinner", "snack", "meal"]).optional(),
   notes: z.string().nullable().optional(),
+  folderId: z.string().nullable().optional(),
+  isFavorite: z.boolean().optional(),
   items: z.array(mealItemCreateSchema).min(1).optional(),
+});
+
+export const recipeTagsUpdateSchema = z.object({
+  tags: z.array(z.string().trim().min(1).max(48)).max(10),
+});
+
+export const recipeFolderCreateSchema = z.object({
+  name: z.string().trim().min(1).max(64),
+});
+
+export const recipeFolderUpdateSchema = recipeFolderCreateSchema;
+
+export const recipeFolderReadSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  createdAt: z.string(),
 });
 
 export const recipeReadSchema = z.object({
@@ -273,6 +301,10 @@ export const recipeReadSchema = z.object({
   mealType: z.enum(["breakfast", "lunch", "dinner", "snack", "meal"]).optional(),
   notes: z.string().nullable(),
   timesUsed: z.number().int().nonnegative(),
+  isFavorite: z.boolean().optional(),
+  folderId: z.string().nullable().optional(),
+  folderName: z.string().nullable().optional(),
+  tags: z.array(z.string()).optional(),
   items: z.array(mealItemReadSchema),
   createdAt: z.string(),
   updatedAt: z.string(),
@@ -337,6 +369,18 @@ export const rangeInsightsSchema = z.object({
   averageCalories: z.number().nonnegative(),
   averageProteinGrams: z.number().nonnegative(),
   averageFiberGrams: z.number().nonnegative(),
+  weightComparison: z.object({
+    status: z.enum(["insufficient_data", "limited", "observed"]),
+    trend: z.enum(["up", "down", "steady", "unavailable"]),
+    entryCount: z.number().int().nonnegative(),
+    firstLoggedOn: z.string().nullable(),
+    lastLoggedOn: z.string().nullable(),
+    observationDays: z.number().int().nonnegative(),
+    changeGrams: z.number().nullable(),
+    goalDirectionContext: z.enum(["consistent", "changed", "unavailable"]),
+    goalDirections: z.array(z.enum(["maintain", "cut", "gain"])),
+    goalRevisionCount: z.number().int().nonnegative(),
+  }),
   days: z.array(weeklyInsightDaySchema),
 });
 
@@ -460,6 +504,23 @@ export const securityActivityListSchema = z.object({
   items: z.array(securityActivitySchema),
 });
 
+export const aiUsageAllowanceSchema = z.object({
+  remainingOperations: z.number().int().nonnegative().nullable(),
+  operationLimit: z.number().int().nonnegative().nullable(),
+  remainingImages: z.number().int().nonnegative().nullable(),
+  imageLimit: z.number().int().nonnegative().nullable(),
+  remainingConcurrent: z.number().int().nonnegative().nullable(),
+  concurrencyLimit: z.number().int().nonnegative().nullable(),
+  available: z.boolean(),
+  nextAvailabilityAt: z.string().nullable(),
+});
+
+export const aiUsageSummarySchema = z.object({
+  windowDays: z.number().int().positive(),
+  mealAnalysis: aiUsageAllowanceSchema,
+  nutritionLabelAnalysis: aiUsageAllowanceSchema,
+});
+
 export const nutritionGoalSchema = z.object({
   id: z.string(),
   startsOn: z.string(),
@@ -469,6 +530,7 @@ export const nutritionGoalSchema = z.object({
   fatGrams: z.number().nonnegative(),
   fiberGrams: z.number().nonnegative().nullable().optional(),
   sodiumMilligrams: z.number().nonnegative().nullable().optional(),
+  goalDirection: z.enum(["maintain", "cut", "gain"]).nullable().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -481,6 +543,7 @@ export const nutritionGoalUpdateSchema = z.object({
   fatGrams: z.number().nonnegative(),
   fiberGrams: z.number().nonnegative().nullable().optional(),
   sodiumMilligrams: z.number().nonnegative().nullable().optional(),
+  goalDirection: z.enum(["maintain", "cut", "gain"]).nullable().optional(),
 });
 
 export const onboardingGoalValues = [
@@ -581,6 +644,7 @@ export type Confidence = z.infer<typeof confidenceSchema>;
 export type FoodQualityAssessment = z.infer<typeof foodQualityAssessmentSchema>;
 export type FoodSearchResult = z.infer<typeof foodSearchResultSchema>;
 export type FoodSearchResponse = z.infer<typeof foodSearchResponseSchema>;
+export type FavoriteFoodTagsUpdate = z.infer<typeof favoriteFoodTagsUpdateSchema>;
 export type FoodServingOption = z.infer<typeof foodServingOptionSchema>;
 export type FoodSourceRevision = z.infer<typeof foodSourceRevisionSchema>;
 export type FoodSourceConflict = z.infer<typeof foodSourceConflictSchema>;
@@ -600,6 +664,10 @@ export type MealImageAccess = z.infer<typeof mealImageAccessSchema>;
 export type MealRead = z.infer<typeof mealReadSchema>;
 export type RecipeCreate = z.infer<typeof recipeCreateSchema>;
 export type RecipeUpdate = z.infer<typeof recipeUpdateSchema>;
+export type RecipeTagsUpdate = z.infer<typeof recipeTagsUpdateSchema>;
+export type RecipeFolderCreate = z.infer<typeof recipeFolderCreateSchema>;
+export type RecipeFolderUpdate = z.infer<typeof recipeFolderUpdateSchema>;
+export type RecipeFolderRead = z.infer<typeof recipeFolderReadSchema>;
 export type RecipeRead = z.infer<typeof recipeReadSchema>;
 export type RecipeLogResult = z.infer<typeof recipeLogResultSchema>;
 export type DiaryTotals = z.infer<typeof diaryTotalsSchema>;
@@ -624,6 +692,8 @@ export type AuthSessionSummary = z.infer<typeof authSessionSummarySchema>;
 export type AuthSessionList = z.infer<typeof authSessionListSchema>;
 export type SecurityActivity = z.infer<typeof securityActivitySchema>;
 export type SecurityActivityList = z.infer<typeof securityActivityListSchema>;
+export type AiUsageAllowance = z.infer<typeof aiUsageAllowanceSchema>;
+export type AiUsageSummary = z.infer<typeof aiUsageSummarySchema>;
 export type NutritionGoal = z.infer<typeof nutritionGoalSchema>;
 export type NutritionGoalUpdate = z.infer<typeof nutritionGoalUpdateSchema>;
 export type OnboardingGoal = (typeof onboardingGoalValues)[number];

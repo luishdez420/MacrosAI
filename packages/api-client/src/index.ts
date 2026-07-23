@@ -1,4 +1,5 @@
 import type {
+  AiUsageSummary,
   AuthSessionList,
   ClerkProfileProvision,
   CustomFoodCreate,
@@ -9,6 +10,7 @@ import type {
   FoodDetail,
   FoodSearchResponse,
   FoodSearchResult,
+  FavoriteFoodTagsUpdate,
   HydrationEntry,
   HydrationEntryUpdate,
   LocalAuthRequest,
@@ -26,8 +28,12 @@ import type {
   NutritionGoal,
   NutritionGoalUpdate,
   RecipeCreate,
+  RecipeFolderCreate,
+  RecipeFolderRead,
+  RecipeFolderUpdate,
   RecipeLogResult,
   RecipeRead,
+  RecipeTagsUpdate,
   RecipeUpdate,
   SecurityActivityList,
   UserPreference,
@@ -175,6 +181,9 @@ export function createApiClient({
     getSession() {
       return request<UserSession>("/auth/session");
     },
+    getAiUsageSummary() {
+      return request<AiUsageSummary>("/account/ai-usage");
+    },
     provisionClerkProfile(input: ClerkProfileProvision) {
       return request<UserSession>("/auth/provision", {
         method: "POST",
@@ -243,9 +252,10 @@ export function createApiClient({
       const search = new URLSearchParams({ limit: String(limit) });
       return request<WeightEntry[]>(`/weight?${search.toString()}`);
     },
-    saveWeightEntry(input: WeightEntryCreate) {
+    saveWeightEntry(input: WeightEntryCreate, options?: { idempotencyKey?: string }) {
       return request<WeightEntry>("/weight", {
         method: "POST",
+        headers: options?.idempotencyKey ? { "Idempotency-Key": options.idempotencyKey } : undefined,
         body: JSON.stringify(input),
       });
     },
@@ -293,6 +303,12 @@ export function createApiClient({
     removeFavoriteFood(foodId: string) {
       return request<void>(`/foods/favorites/${encodeURIComponent(foodId)}`, {
         method: "DELETE",
+      });
+    },
+    updateFavoriteFoodTags(foodId: string, input: FavoriteFoodTagsUpdate) {
+      return request<FoodSearchResult>(`/foods/favorites/${encodeURIComponent(foodId)}/tags`, {
+        method: "PUT",
+        body: JSON.stringify(input),
       });
     },
     getFood(foodId: string) {
@@ -372,9 +388,10 @@ export function createApiClient({
         method: "DELETE",
       });
     },
-    updateMeal(mealId: string, input: MealUpdate) {
+    updateMeal(mealId: string, input: MealUpdate, options: { revision: number }) {
       return request<MealRead>(`/meals/${encodeURIComponent(mealId)}`, {
         method: "PATCH",
+        headers: { "If-Match": `"${options.revision}"` },
         body: JSON.stringify(input),
       });
     },
@@ -385,6 +402,26 @@ export function createApiClient({
     },
     listRecipes() {
       return request<RecipeRead[]>("/recipes");
+    },
+    listRecipeFolders() {
+      return request<RecipeFolderRead[]>("/recipes/folders");
+    },
+    createRecipeFolder(input: RecipeFolderCreate) {
+      return request<RecipeFolderRead>("/recipes/folders", {
+        method: "POST",
+        body: JSON.stringify(input),
+      });
+    },
+    updateRecipeFolder(folderId: string, input: RecipeFolderUpdate) {
+      return request<RecipeFolderRead>(`/recipes/folders/${encodeURIComponent(folderId)}`, {
+        method: "PATCH",
+        body: JSON.stringify(input),
+      });
+    },
+    deleteRecipeFolder(folderId: string) {
+      return request<void>(`/recipes/folders/${encodeURIComponent(folderId)}`, {
+        method: "DELETE",
+      });
     },
     getRecipe(recipeId: string) {
       return request<RecipeRead>(`/recipes/${encodeURIComponent(recipeId)}`);
@@ -399,6 +436,12 @@ export function createApiClient({
     updateRecipe(recipeId: string, input: RecipeUpdate) {
       return request<RecipeRead>(`/recipes/${encodeURIComponent(recipeId)}`, {
         method: "PATCH",
+        body: JSON.stringify(input),
+      });
+    },
+    updateRecipeTags(recipeId: string, input: RecipeTagsUpdate) {
+      return request<RecipeRead>(`/recipes/${encodeURIComponent(recipeId)}/tags`, {
+        method: "PUT",
         body: JSON.stringify(input),
       });
     },

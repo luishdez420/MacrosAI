@@ -32,6 +32,8 @@ It intentionally creates no workers, Key Value instance, Cloudflare R2 bucket, S
 
 Run `render blueprints validate render.yaml` after authenticating the Render CLI and selecting the workspace. It validates the actual Render schema and resource plan before deployment.
 
+**Validation record:** The Blueprint passed Render CLI validation on 2026-07-21 with `0` planned actions. This confirms the checked-in schema only; it does not create a service, validate Clerk values, or prove a hosted runtime.
+
 ## Moving To Production
 
 The paid production topology is preserved separately in `render.production.yaml`; it provisions always-on API/workers, Redis, managed PostgreSQL, and Cloudflare R2. Use [[render-r2-setup|the production setup guide]] only after accepting paid service charges and completing the required security and privacy gates.

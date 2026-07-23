@@ -15,12 +15,13 @@ Before a production deployment, operators must set managed environment variables
 - `RATE_LIMIT_BACKEND=redis`
 - `REDIS_URL` pointing to the managed, TLS-enabled Redis service where supported by the selected provider
 - `RATE_LIMIT_REDIS_KEY_PREFIX` unique to the deployment environment
-- reviewed `RATE_LIMIT_FOOD_SEARCH_*`, `RATE_LIMIT_AUTH_*`, `RATE_LIMIT_ANALYSIS_*`, and `RATE_LIMIT_ANALYSIS_USER_*` values appropriate for expected public-catalog, authentication, and paid-analysis abuse scenarios
+- reviewed `RATE_LIMIT_FOOD_SEARCH_*`, `RATE_LIMIT_AUTH_*`, `RATE_LIMIT_ANALYSIS_*`, and `RATE_LIMIT_ANALYSIS_USER_*` values appropriate for expected authenticated-catalog, authentication, and paid-analysis abuse scenarios
 - `NUTRITION_PROVIDER_CIRCUIT_BREAKER_BACKEND=redis`
 - `NUTRITION_PROVIDER_CIRCUIT_BREAKER_REDIS_KEY_PREFIX` unique to the deployment environment
 - `TRUSTED_PROXY_CIDRS` containing only the direct load-balancer/reverse-proxy CIDRs documented by the selected platform
 - `METRICS_ENABLED=true`
 - `METRICS_BEARER_TOKEN` provided by managed secrets and used only by the private metrics collector
+- `BACKGROUND_WORKER_HEARTBEATS_REQUIRED=true` and a `BACKGROUND_WORKER_HEARTBEAT_TTL_SECONDS` value longer than the meal-analysis, image-retention, and food-source-refresh worker poll intervals
 - `AUDIT_LOG_RETENTION_DAYS` selected through the approved privacy/operations policy
 - `AUDIT_DELIVERY_BACKEND=webhook`, `AUDIT_DELIVERY_WEBHOOK_URL` using HTTPS, and `AUDIT_DELIVERY_HMAC_SECRET` from managed secrets. The receiver must be a deployment-approved append-only/WORM destination.
 - Clerk production identity values and production S3-compatible storage values required by the application configuration
@@ -40,7 +41,7 @@ Never use a broad range such as `0.0.0.0/0`. Revalidate the platform CIDRs whene
 
 ## Readiness And Monitoring
 
-Use `GET /api/v1/health/ready` for a readiness probe. It checks database/schema readiness, the shared limiter, and the shared provider-circuit state when configured for Redis. It returns:
+Use `GET /api/v1/health/ready` for a readiness probe. It checks database/schema readiness, the shared limiter, the shared provider-circuit state when configured for Redis, and the aggregate anonymous liveness of the three required workers when heartbeat enforcement is enabled. It returns:
 
 - `200` only when the checked dependencies are ready.
 - `503` with a request ID and dependency categories, never connection strings or Redis error details.
@@ -56,10 +57,11 @@ Create alerts for:
 - Redis connection/error-rate, latency, memory-pressure, eviction, and availability signals from the managed Redis provider.
 - Any sustained open provider circuit, failed half-open probe, or `circuit_unavailable` provider metric.
 - A sustained `audit_delivery_sweep_complete` retry count, an unexpected absence of delivery sweep logs, or a growing population of retrying audit-delivery outbox rows.
+- A sustained `living_nutrition_background_worker_healthy{worker="..."} 0` gauge or any `backgroundWorkers.healthy=false` readiness response. Restore the missing worker; do not disable production heartbeat enforcement to mask a worker outage.
 
 The application logs only the stable operation name, budget values, retry duration, and request ID for limiter events. It must not log a raw client address, verified user identity, resolved limiter key, authorization token, or provider payload.
 
-`GET /metrics` is a root endpoint, not `/api/v1`. Keep it on a private scrape network and present `Authorization: Bearer $METRICS_BEARER_TOKEN`; the app returns `404` for a missing/invalid token or disabled metrics. It exposes only low-cardinality normalized routes, statuses, duration buckets, rate-limit decisions, readiness dependency gauges, provider outcomes/latency/circuit state, and food-cache hit, refresh, and fallback events. Prometheus-compatible collectors must scrape every API replica and aggregate them; no collector, dashboard, or alert service is supplied by this repository.
+`GET /metrics` is a root endpoint, not `/api/v1`. Keep it on a private scrape network and present `Authorization: Bearer $METRICS_BEARER_TOKEN`; the app returns `404` for a missing/invalid token or disabled metrics. It exposes only low-cardinality normalized routes, statuses, duration buckets, rate-limit decisions, readiness dependency gauges, aggregate background-worker liveness by static worker type, provider outcomes/latency/circuit state, and food-cache hit, refresh, and fallback events. Prometheus-compatible collectors must scrape every API replica and aggregate them; no collector, dashboard, or alert service is supplied by this repository.
 
 The retention worker emits an aggregate `living_nutrition_audit_delivery_events_total` metric and structured delivery sweep counts. It does not expose audit IDs, request IDs, client data, receiver URLs, response bodies, or error text. Treat a retrying outbox as an audit-delivery incident: restore the approved receiver or its managed secret, then verify the backlog drains before allowing retention cleanup to remove delivered records.
 
@@ -111,6 +113,7 @@ Run these checks in a preview environment using the same ingress and Redis topol
 8. Restore Redis, verify readiness, then check that logs contain no raw client address, verified user identity, or token values.
 9. Simulate a transient nutrition-provider outage across both replicas, verify only the leased half-open probe resumes after the recovery window, and confirm the healthy fallback provider or stale cached record remains available where applicable.
 10. Confirm the protected `/metrics` scrape succeeds from the collector network, shows provider/cache health signals, and contains no request IDs, client addresses, user identifiers, tokens, food queries, barcodes, image data, or exception messages.
-11. When Sentry is enabled, verify a controlled preview failure arrives with the request-ID correlation tag only and has no request, user, device, breadcrumb, context, screenshot, view-hierarchy, replay, nutrition, or image payload. Verify release symbols/source maps separately before relying on stack traces.
+11. Stop one worker in preview and verify readiness returns `503` with only the unhealthy worker type, the background-worker gauge becomes `0`, and the API resumes readiness only after the worker reports again. Do not expose or record a process ID, hostname, user, image, or storage key while testing.
+12. When Sentry is enabled, verify a controlled preview failure arrives with the request-ID correlation tag only and has no request, user, device, breadcrumb, context, screenshot, view-hierarchy, replay, nutrition, or image payload. Verify release symbols/source maps separately before relying on stack traces.
 
 Document the deployment provider, exact proxy CIDRs, dashboard links, Sentry project and alert owners, on-call route, and validation date in the release record. Those deployment-specific values do not belong in source control.

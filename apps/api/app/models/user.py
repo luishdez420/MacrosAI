@@ -117,6 +117,9 @@ class NutritionGoal(Base):
     fat_grams: Mapped[float] = mapped_column(Float)
     fiber_grams: Mapped[float | None] = mapped_column(Float, nullable=True)
     sodium_milligrams: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Direction is stored with the effective-dated nutrition goal so insight
+    # comparisons never infer a historical intent from today's preference.
+    goal_direction: Mapped[str | None] = mapped_column(String(16), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -158,6 +161,42 @@ class FavoriteFood(Base):
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     food_source_record_id: Mapped[str] = mapped_column(
         ForeignKey("food_source_records.id", ondelete="CASCADE"),
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class FavoriteFoodTag(Base):
+    """A private organization label owned by one account."""
+
+    __tablename__ = "favorite_food_tags"
+    __table_args__ = (UniqueConstraint("user_id", "name", name="uq_favorite_food_tags_user_name"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(48))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class FavoriteFoodTagAssignment(Base):
+    """Associates a user's favorite with one of their private tags."""
+
+    __tablename__ = "favorite_food_tag_assignments"
+    __table_args__ = (
+        UniqueConstraint(
+            "favorite_food_id",
+            "favorite_food_tag_id",
+            name="uq_favorite_food_tag_assignments_favorite_tag",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    favorite_food_id: Mapped[str] = mapped_column(
+        ForeignKey("favorite_foods.id", ondelete="CASCADE"),
+        index=True,
+    )
+    favorite_food_tag_id: Mapped[str] = mapped_column(
+        ForeignKey("favorite_food_tags.id", ondelete="CASCADE"),
         index=True,
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

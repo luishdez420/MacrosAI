@@ -90,6 +90,31 @@ describe("SavedFoodsScreen", () => {
       marginTop: spacing.sm,
     });
   });
+
+  it("lets a user open a private tag editor for a favorite", async () => {
+    mockGetFavoriteFoods.mockResolvedValue({
+      items: [{ ...food("favorite_1", "Greek yogurt"), savedTags: ["Breakfast"] }],
+    });
+    mockGetRecentFoods.mockResolvedValue({ items: [] });
+    mockGetCustomFoods.mockResolvedValue({ items: [] });
+    const view = await renderWithQueryClient(<SavedFoodsScreen />);
+
+    await waitFor(() => {
+      expect(view.getByLabelText("Filter favorites by Breakfast")).toBeTruthy();
+      expect(view.getByLabelText("Organize tags for Greek yogurt")).toBeTruthy();
+    });
+
+    fireEvent.press(view.getByLabelText("Organize tags for Greek yogurt"));
+    await waitFor(() => {
+      expect(view.getByLabelText("Private tags for Greek yogurt")).toBeTruthy();
+    });
+    fireEvent.changeText(view.getByLabelText("Private tags for Greek yogurt"), "Breakfast, Quick");
+    await waitFor(() => {
+      expect(view.getByLabelText("Private tags for Greek yogurt").props.value).toBe("Breakfast, Quick");
+    });
+    expect(view.getByText("Save tags")).toBeTruthy();
+    expect(view.getByText("Only you can see these labels. They do not change the nutrition source.")).toBeTruthy();
+  });
 });
 
 function food(

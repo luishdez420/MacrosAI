@@ -60,6 +60,8 @@ def update_current_goal(
     goal.fat_grams = payload.fat_grams
     goal.fiber_grams = payload.fiber_grams
     goal.sodium_milligrams = payload.sodium_milligrams
+    if payload.goal_direction is not None:
+        goal.goal_direction = payload.goal_direction
 
     db.commit()
     db.refresh(goal)
@@ -127,6 +129,7 @@ def goal_to_read(goal: NutritionGoal) -> NutritionGoalRead:
         fat_grams=goal.fat_grams,
         fiber_grams=goal.fiber_grams,
         sodium_milligrams=goal.sodium_milligrams,
+        goal_direction=goal.goal_direction,
         created_at=goal.created_at,
         updated_at=goal.updated_at,
     )

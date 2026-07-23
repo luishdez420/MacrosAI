@@ -65,3 +65,24 @@ class SecurityActivityRead(ApiModel):
 
 class SecurityActivityList(ApiModel):
     items: list[SecurityActivityRead]
+
+
+class AiUsageAllowanceRead(ApiModel):
+    """Privacy-minimized capacity for one AI-assisted action."""
+
+    remaining_operations: int | None = Field(default=None, ge=0)
+    operation_limit: int | None = Field(default=None, ge=0)
+    remaining_images: int | None = Field(default=None, ge=0)
+    image_limit: int | None = Field(default=None, ge=0)
+    remaining_concurrent: int | None = Field(default=None, ge=0)
+    concurrency_limit: int | None = Field(default=None, ge=0)
+    available: bool
+    next_availability_at: datetime | None = None
+
+
+class AiUsageSummaryRead(ApiModel):
+    """Current-user analysis capacity without entitlement or ledger history."""
+
+    window_days: int = Field(ge=1)
+    meal_analysis: AiUsageAllowanceRead
+    nutrition_label_analysis: AiUsageAllowanceRead

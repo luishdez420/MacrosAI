@@ -12,6 +12,12 @@ import { RecipeLibraryScreen } from "../RecipeLibraryScreen";
 const mockListRecipes = jest.fn();
 const mockLogRecipe = jest.fn();
 const mockDeleteRecipe = jest.fn();
+const mockUpdateRecipeTags = jest.fn();
+const mockListRecipeFolders = jest.fn();
+const mockCreateRecipeFolder = jest.fn();
+const mockUpdateRecipeFolder = jest.fn();
+const mockDeleteRecipeFolder = jest.fn();
+const mockUpdateRecipe = jest.fn();
 const mockPush = jest.fn();
 const mockReplace = jest.fn();
 const mockNotificationAsync = jest.fn();
@@ -37,6 +43,12 @@ jest.mock("../../../services/api", () => ({
     listRecipes: (...args: unknown[]) => mockListRecipes(...args),
     logRecipe: (...args: unknown[]) => mockLogRecipe(...args),
     deleteRecipe: (...args: unknown[]) => mockDeleteRecipe(...args),
+    updateRecipeTags: (...args: unknown[]) => mockUpdateRecipeTags(...args),
+    listRecipeFolders: (...args: unknown[]) => mockListRecipeFolders(...args),
+    createRecipeFolder: (...args: unknown[]) => mockCreateRecipeFolder(...args),
+    updateRecipeFolder: (...args: unknown[]) => mockUpdateRecipeFolder(...args),
+    deleteRecipeFolder: (...args: unknown[]) => mockDeleteRecipeFolder(...args),
+    updateRecipe: (...args: unknown[]) => mockUpdateRecipe(...args),
   },
 }));
 
@@ -45,9 +57,16 @@ describe("RecipeLibraryScreen", () => {
     mockListRecipes.mockReset();
     mockLogRecipe.mockReset();
     mockDeleteRecipe.mockReset();
+    mockUpdateRecipeTags.mockReset();
+    mockListRecipeFolders.mockReset();
+    mockCreateRecipeFolder.mockReset();
+    mockUpdateRecipeFolder.mockReset();
+    mockDeleteRecipeFolder.mockReset();
+    mockUpdateRecipe.mockReset();
     mockPush.mockReset();
     mockReplace.mockReset();
     mockNotificationAsync.mockReset();
+    mockListRecipeFolders.mockResolvedValue([]);
   });
 
   it("shows source-backed recipe totals and opens the editable meal builder", async () => {
@@ -87,6 +106,147 @@ describe("RecipeLibraryScreen", () => {
     });
 
     await waitFor(() => expect(view.getByText("Chicken rice bowl")).toBeTruthy());
+  });
+
+  it("filters recipes by meal time and searches their ingredient names", async () => {
+    const breakfastRecipe: RecipeRead = {
+      ...recipe(),
+      id: "recipe_2",
+      name: "Berry oats",
+      mealType: "breakfast",
+      timesUsed: 7,
+      items: [item("recipe_item_3", "Blueberries", 100, 57, 0.7, 14.5, 0.3)],
+    };
+    mockListRecipes.mockResolvedValue([recipe(), breakfastRecipe]);
+
+    const view = await renderWithQueryClient(<RecipeLibraryScreen />);
+
+    await waitFor(() => expect(view.getByText("Berry oats")).toBeTruthy());
+    await act(async () => {
+      fireEvent.changeText(view.getByLabelText("Search recipes"), "blueberries");
+    });
+
+    await waitFor(() => {
+      expect(view.getByText("Berry oats")).toBeTruthy();
+      expect(view.queryByText("Chicken rice bowl")).toBeNull();
+    });
+
+    await act(async () => {
+      fireEvent.changeText(view.getByLabelText("Search recipes"), "");
+    });
+    await act(async () => {
+      fireEvent.press(view.getByLabelText("Show Breakfast recipes"));
+    });
+
+    await waitFor(() => {
+      expect(view.getByLabelText("Show Breakfast recipes").props.accessibilityState.selected).toBe(true);
+      expect(view.queryByText("Chicken rice bowl")).toBeNull();
+    });
+    expect(view.getByLabelText("Sort recipes by Most used")).toBeTruthy();
+  });
+
+  it("saves private recipe tags without changing the recipe snapshot", async () => {
+    const taggedRecipe = { ...recipe(), tags: ["Weekday", "quick"] };
+    mockListRecipes.mockResolvedValue([recipe()]);
+    mockUpdateRecipeTags.mockResolvedValue(taggedRecipe);
+
+    const view = await renderWithQueryClient(<RecipeLibraryScreen />);
+    await waitFor(() => expect(view.getByText("Chicken rice bowl")).toBeTruthy());
+
+    await act(async () => {
+      fireEvent.changeText(view.getByLabelText("Private tags for Chicken rice bowl"), "Weekday, quick");
+    });
+    await waitFor(() => {
+      expect(view.getByLabelText("Private tags for Chicken rice bowl").props.value).toBe("Weekday, quick");
+    });
+    await act(async () => {
+      fireEvent.press(view.getByText("Save tags"));
+    });
+
+    await waitFor(() => {
+      expect(mockUpdateRecipeTags).toHaveBeenCalledWith("recipe_1", { tags: ["Weekday", "quick"] });
+      expect(mockListRecipes).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it("creates, filters, and assigns private recipe folders without changing recipe items", async () => {
+    const folder = { id: "folder_1", name: "Weeknight", createdAt: "2026-07-22T12:00:00Z" };
+    mockListRecipes.mockResolvedValue([recipe()]);
+    mockListRecipeFolders.mockResolvedValue([folder]);
+    mockCreateRecipeFolder.mockResolvedValue(folder);
+    mockUpdateRecipe.mockResolvedValue({ ...recipe(), folderId: folder.id, folderName: folder.name });
+
+    const view = await renderWithQueryClient(<RecipeLibraryScreen />);
+    await waitFor(() => expect(view.getByText("Chicken rice bowl")).toBeTruthy());
+
+    await act(async () => {
+      fireEvent.changeText(view.getByLabelText("New recipe folder name"), "Weekend");
+    });
+    await act(async () => {
+      fireEvent.press(view.getByText("Add folder"));
+    });
+    await waitFor(() => {
+      expect(mockCreateRecipeFolder).toHaveBeenCalledWith({ name: "Weekend" });
+      expect(mockListRecipeFolders).toHaveBeenCalledTimes(2);
+    });
+
+    await act(async () => {
+      fireEvent.press(view.getByLabelText("Move Chicken rice bowl to Weeknight"));
+    });
+    await waitFor(() => {
+      expect(mockUpdateRecipe).toHaveBeenCalledWith("recipe_1", { folderId: "folder_1" });
+      expect(mockListRecipes).toHaveBeenCalledTimes(2);
+    });
+    expect(mockUpdateRecipeTags).not.toHaveBeenCalled();
+    expect(view.getByLabelText("Show Weeknight recipes")).toBeTruthy();
+  });
+
+  it("toggles a private recipe favorite and exposes the favorites-only filter", async () => {
+    mockListRecipes.mockResolvedValue([recipe()]);
+    mockUpdateRecipe.mockResolvedValue({ ...recipe(), isFavorite: true });
+
+    const view = await renderWithQueryClient(<RecipeLibraryScreen />);
+    await waitFor(() => expect(view.getByText("Chicken rice bowl")).toBeTruthy());
+
+    await act(async () => {
+      fireEvent.press(view.getByLabelText("Add Chicken rice bowl to favorite recipes"));
+    });
+    await waitFor(() => expect(mockUpdateRecipe).toHaveBeenCalledWith("recipe_1", { isFavorite: true }));
+
+    await act(async () => {
+      fireEvent.press(view.getByLabelText("Show favorite recipes only"));
+    });
+    expect(view.getByLabelText("Show favorite recipes only").props.accessibilityState.selected).toBe(true);
+  });
+
+  it("renames or safely deletes a private folder without deleting its recipes", async () => {
+    const folder = { id: "folder_1", name: "Weeknight", createdAt: "2026-07-22T12:00:00Z" };
+    mockListRecipes.mockResolvedValue([recipe()]);
+    mockListRecipeFolders.mockResolvedValue([folder]);
+    mockUpdateRecipeFolder.mockResolvedValue({ ...folder, name: "Weekday dinners" });
+    mockDeleteRecipeFolder.mockResolvedValue(undefined);
+
+    const view = await renderWithQueryClient(<RecipeLibraryScreen />);
+    await waitFor(() => expect(view.getByLabelText("Folder name for Weeknight")).toBeTruthy());
+
+    await act(async () => {
+      fireEvent.changeText(view.getByLabelText("Folder name for Weeknight"), "Weekday dinners");
+    });
+    await act(async () => {
+      fireEvent.press(view.getByText("Rename"));
+    });
+    await waitFor(() => expect(mockUpdateRecipeFolder).toHaveBeenCalledWith("folder_1", { name: "Weekday dinners" }));
+
+    await act(async () => {
+      fireEvent.press(view.getByText("Delete"));
+    });
+    expect(await view.findByText("Delete Weeknight?")).toBeTruthy();
+    expect(view.getByText("Recipes will stay saved and move to Unfiled. Logged meals will not change.")).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.press(view.getByLabelText("Delete folder"));
+    });
+    await waitFor(() => expect(mockDeleteRecipeFolder).toHaveBeenCalledWith("folder_1"));
   });
 
   it("confirms a recipe save before letting the user continue to Today", async () => {

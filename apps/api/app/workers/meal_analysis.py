@@ -34,7 +34,9 @@ from app.services.analysis_jobs import (
     fail_analysis_job,
 )
 from app.services.image_lifecycle import delete_image
+from app.services.worker_heartbeats import MEAL_ANALYSIS_WORKER, heartbeat_worker
 from app.storage import PrivateImageStorage, build_private_image_storage
+from app.workers.startup import ensure_worker_database_ready
 
 logger = structlog.get_logger(__name__)
 
@@ -51,6 +53,7 @@ async def run_once(
 ) -> bool:
     """Claim and process one job, returning whether work was found."""
 
+    heartbeat_worker(MEAL_ANALYSIS_WORKER, session_factory=session_factory)
     active_storage = storage or build_private_image_storage()
     active_registry = registry or get_provider_registry()
     db = session_factory()
@@ -209,6 +212,7 @@ def worker_error_code(error: Exception) -> str:
 
 def main() -> None:
     configure_logging()
+    ensure_worker_database_ready()
     storage = build_private_image_storage()
     logger.info("meal_analysis_worker_started", poll_seconds=settings.analysis_job_worker_poll_seconds)
     while True:

@@ -329,6 +329,18 @@ function rangeInsights(): RangeInsights {
     averageCalories: 640,
     averageProteinGrams: 42,
     averageFiberGrams: 8,
+    weightComparison: {
+      status: "insufficient_data",
+      trend: "unavailable",
+      entryCount: 0,
+      firstLoggedOn: null,
+      lastLoggedOn: null,
+      observationDays: 0,
+      changeGrams: null,
+      goalDirectionContext: "unavailable",
+      goalDirections: [],
+      goalRevisionCount: 0,
+    },
     days: [],
   };
 }
@@ -348,6 +360,7 @@ function todayDiary(): DiaryDay {
     meals: [
       {
         id: "meal_1",
+        revision: 1,
         name: "grilled chicken bowl",
         mealType: "lunch",
         loggedAt: "2026-07-09T12:00:00Z",

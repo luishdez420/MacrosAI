@@ -1,6 +1,6 @@
 # Roadmap
 
-Last updated: 2026-07-21
+Last updated: 2026-07-22
 
 This roadmap is prioritized by product risk and implementation dependencies. It does not include speculative deadlines. See [[Current State]], [[Architecture]], [[Decisions]], and [[Known Issues]].
 
@@ -127,7 +127,7 @@ Definition of done:
 
 ## Phase 5: Recipes, favorites, recent foods, custom foods, weight tracking, and hydration
 
-Status: Partially implemented, with recipe save/log/delete, basic saved-food management, custom-food create/edit/reuse/barcode fallback, assistive nutrition-label extraction and confirmation, basic weight tracking, optional daily hydration totals plus a local opt-in reminder, and range/monthly saved-snapshot insights implemented
+Status: Partially implemented, with recipe save/edit/log/delete plus client-side ingredient search, meal-time filtering, recent/use/name sorting, and private tags; basic saved-food management; custom-food create/edit/reuse/barcode fallback; assistive nutrition-label extraction and confirmation; basic weight tracking; optional daily hydration totals plus a local opt-in reminder; and range/monthly saved-snapshot insights implemented
 
 Goal: Complete the user-owned nutrition support workflows already represented in the schema.
 
@@ -136,14 +136,14 @@ Why it matters: Fast repeat logging and personal foods are core nutrition-tracke
 Major tasks:
 
 - Expand recent-food management beyond the current automatic persistence and Manual Search display.
-- Expand recipe organization, categories, and future-log adjustment beyond the current source-backed save, edit, log-to-today, usage count, and deletion workflow.
+- Expand recipe organization and future-log adjustment beyond the current source-backed save, edit, log-to-today, usage count, deletion, ingredient-aware library search, meal-time/folder filtering, recent/use/name sorting, private favorites/tags, and one-folder create/rename/assign/unfile/delete management. Server-side search/pagination, shared collections, and richer reuse controls remain pending.
 - Refine the current live drag-handle reordering and persisted item order in Meal Builder with richer physics-based list layout animation if user testing shows it materially improves the accessible move controls.
-- Expand favorite/recent food organization beyond the current Saved Foods search/filter/sort/bulk-clear management screen.
+- Expand favorite/recent food organization beyond the implemented Saved Foods search/filter/sort/bulk-clear screen and account-private favorite tags.
 - Expand nutrition-label capture beyond the implemented assistive visual extraction and explicit review flow into consented stored evidence and richer verification. Extraction and safe per-100g normalization are implemented; stored evidence is pending.
 - Expand weight tracking beyond the current Profile logging/history/trend flow.
 - Expand hydration beyond the implemented optional one-total-per-day Today module and one local opt-in daily reminder into intentionally designed history and insights only after deciding whether those features add useful, non-medical value. Validate native reminder delivery before expanding it.
-- Connect the implemented effective-date goal schedule and weight trends with careful comparative guidance where appropriate.
-- The daily nutrient-detail route is implemented for saved calories, macros, fiber, sugar, sodium, configured targets, and meal contributions. Expand range/monthly insights beyond the current saved-snapshot calorie/protein/fiber summaries, including weight integration and comparison periods.
+- Extend the implemented descriptive range comparison only after validating the user need for longer-term aggregation or smoothing; do not introduce coaching or medical claims.
+- The daily nutrient-detail route is implemented for saved calories, macros, fiber, sugar, sodium, configured targets, and meal contributions. Expand range/monthly insights beyond the current saved-snapshot calorie/protein/fiber summaries and descriptive selected-period weight comparison.
 
 Dependencies:
 
@@ -152,12 +152,12 @@ Dependencies:
 
 Definition of done:
 
-- Recent and favorite foods work across app restarts, with dedicated favorites/recent controls. Basic search/filter/sort and visible bulk-clear management is implemented; richer organization is pending.
+- Recent and favorite foods work across app restarts, with dedicated favorites/recent controls. Basic search/filter/sort, visible bulk-clear management, and account-private favorite tags are implemented; folders, recipes-as-favorites, and richer grouping remain pending.
 - Users can create, log, edit, and reuse custom foods from mobile. Done for user-entered per-100g custom foods.
-- Users can enter, edit, view, and delete weight history. Done for basic Profile logging/history, editing, deletion, a unit-aware trend graph, and selected-goal-direction feedback; richer persisted goal-integrated insights are pending.
+- Users can enter, edit, view, and delete weight history. Done for basic Profile logging/history, editing, deletion, a unit-aware trend graph, and server-calculated selected-period comparisons with explicit data thresholds and historical goal-direction context when stored. Longer-term aggregation remains pending.
 - Users can record, adjust, and clear an optional daily hydration total. Done for Today, export, and account deletion. A single daily local reminder is also implemented, with permission requested only on enable, an editable time, and cancellation; physical-device validation is pending. History, trends, insights, and offline support remain pending.
-- The progress screen can load backend range and monthly insights. Done for 7-day, 30-day, 90-day, and valid custom windows up to 366 days, with calorie/protein/fiber summaries, historical effective-date calorie targets, and a monthly rhythm card; weight integration and richer comparisons are pending.
-- Users can save a source-backed meal as a reusable recipe and log it later without re-querying providers. Done for save, library, edit, log-to-today, delete, export, and account deletion; richer recipe organization remains pending.
+- The progress screen can load backend range and monthly insights. Done for 7-day, 30-day, 90-day, and valid custom windows up to 366 days, with calorie/protein/fiber summaries, historical effective-date calorie targets, a descriptive weight comparison with evidence and sufficiency states, and a monthly rhythm card; richer longitudinal comparisons are pending.
+- Users can save a source-backed meal as a reusable recipe and log it later without re-querying providers. Done for save, library, ingredient search, meal-time/folder filtering, recent/use/name sorting, private favorites/tags, one-folder create/rename/assign/unfile/delete management, edit, log-to-today, delete, export, and account deletion; server-side search/pagination, shared collections, and richer reuse controls remain pending.
 
 ## Phase 6: Provider caching and resilience
 

@@ -119,8 +119,8 @@ export function buildWeightGoalInsight(
 
   if (sortedEntries.length < 2) {
     return {
-      title: "Goal trend needs more data",
-      body: "Log at least two weight entries to compare your trend with your selected goal direction.",
+      title: "Weight comparison needs more data",
+      body: "Log at least two weight entries to describe a change. Three check-ins spanning seven days are more useful for a goal-context comparison.",
       tone: "neutral",
     };
   }
@@ -133,57 +133,29 @@ export function buildWeightGoalInsight(
   const roundedDelta = Math.round(Math.abs(delta) * 10) / 10;
   const trend =
     Math.abs(delta) <= threshold ? "stable" : delta > threshold ? "up" : "down";
+  const observationDays = Math.max(
+    0,
+    Math.round(
+      (new Date(`${last.loggedOn}T12:00:00`).getTime() -
+        new Date(`${first.loggedOn}T12:00:00`).getTime()) /
+        86_400_000
+    )
+  );
+  const directionLabel = direction === "cut" ? "cut" : direction === "gain" ? "gain" : "maintain";
+  const trendCopy = trend === "stable" ? "No clear weight change" : `Weight is ${trend} ${roundedDelta} ${unit}`;
 
-  if (direction === "maintain") {
-    if (trend === "stable") {
-      return {
-        title: "Weight trend aligns with maintain",
-        body: `Your trend is stable across ${sortedEntries.length} entries, which fits a maintenance goal.`,
-        tone: "success",
-      };
-    }
-
+  if (sortedEntries.length < 3 || observationDays < 7) {
     return {
-      title: "Review maintenance trend",
-      body: `Weight is ${trend} ${roundedDelta} ${unit}. If maintenance is still your goal, consider reviewing your calorie target and logged portions.`,
-      tone: "warning",
-    };
-  }
-
-  if (direction === "cut") {
-    if (trend === "down") {
-      return {
-        title: "Weight trend aligns with cut",
-        body: `Weight is down ${roundedDelta} ${unit} across ${sortedEntries.length} entries. Keep confirming portions so the trend stays useful.`,
-        tone: "success",
-      };
-    }
-
-    return {
-      title: "Review cut progress",
-      body:
-        trend === "stable"
-          ? "Weight is stable so far. If cutting is still your goal, review your calorie target, logged portions, and consistency."
-          : `Weight is up ${roundedDelta} ${unit}. If cutting is still your goal, review your calorie target and recent logs.`,
-      tone: "warning",
-    };
-  }
-
-  if (trend === "up") {
-    return {
-      title: "Weight trend aligns with gain",
-      body: `Weight is up ${roundedDelta} ${unit} across ${sortedEntries.length} entries. Keep logging portions consistently to track the trend.`,
-      tone: "success",
+      title: "Weight comparison is still early",
+      body: `${trendCopy} across ${sortedEntries.length} entries over ${observationDays} days. This card uses your current ${directionLabel} direction; log three check-ins spanning seven days for a more useful descriptive comparison.`,
+      tone: "neutral",
     };
   }
 
   return {
-    title: "Review gain progress",
-    body:
-      trend === "stable"
-        ? "Weight is stable so far. If gaining is still your goal, review your calorie target, protein target, and meal consistency."
-        : `Weight is down ${roundedDelta} ${unit}. If gaining is still your goal, review your calorie target and recent logs.`,
-    tone: "warning",
+    title: "Current-direction weight comparison",
+    body: `${trendCopy} across ${sortedEntries.length} entries over ${observationDays} days. This card uses your current ${directionLabel} direction and is descriptive, not a prediction or medical recommendation. Progress has the historical goal context for selected periods.`,
+    tone: "neutral",
   };
 }
 

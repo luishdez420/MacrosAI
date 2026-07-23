@@ -1,6 +1,6 @@
 # Decisions
 
-Last updated: 2026-07-21
+Last updated: 2026-07-22
 
 This document records confirmed product and architecture decisions. Historical ADRs are preserved separately, including [[adr-0001-phased-nutrition-architecture]]. Mark decisions as superseded rather than erasing them.
 
@@ -264,6 +264,16 @@ Decision: Add one product-owned entitlement per user with `free`, `trial`, `paid
 
 Consequences: The API can bound AI cost and reconcile current `reserved`, `settled`, `refunded`, and `expired` state before billing exists. The defaults are configuration values, not a subscription contract. A customer usage screen, scheduled reconciliation, billing synchronization, production multi-replica verification, durable analysis jobs, and observability dashboards remain separate work.
 
+## 2026-07-21: Show privacy-minimized analysis capacity before capture
+
+Status: Accepted
+
+Context: The durable quota ledger can safely deny an over-limit camera or label request, but a person otherwise learns about that limit only after investing time in image capture. Exposing ledger history, tier, or billing state would add unnecessary account-sensitive information to the mobile client.
+
+Decision: Provide an authenticated `GET /account/ai-usage` summary that contains only per-operation remaining/total capacity, whether one action can begin, and a possible next availability time for a rolling allowance. Camera and nutrition-label capture render it as advisory copy and keep manual entry available. The endpoint never exposes tiers, billing state, idempotency keys, individual usage events, prompts, images, or provider output. The request-time reservation continues to be authoritative.
+
+Consequences: People receive a clear, non-billing promise about current scan availability before capturing an image, while the ledger remains private operational data. This is not a purchase flow or complete account usage history. Billing synchronization, operator dashboards, deployed multi-replica validation, and a decision on whether a broader account usage view is worthwhile remain separate work.
+
 ## 2026-07-21: Camera analysis runs as a durable review job
 
 Status: Accepted
@@ -453,3 +463,85 @@ Context: Production incident response needs a cross-platform signal for unexpect
 Decision: Add optional Sentry-compatible API and mobile runtime hooks. API production configuration requires an HTTPS `SENTRY_DSN`; mobile reporting initializes only in a build with `EXPO_PUBLIC_SENTRY_DSN`. Before transmission, both paths remove request, user, device, breadcrumb, context, and extra payload data, retaining only an approved stable-tag allowlist with request-ID correlation when available. Disable tracing, profiling, replay, session tracking, screenshots, and view-hierarchy capture. Keep Sentry project selection, managed DSNs, alert policy, and release-symbol/source-map upload as deployment work rather than source-controlled defaults.
 
 Consequences: Unexpected failures can be correlated without exposing nutrition records or user/device context to the reporting provider. Production starts fail closed without an API DSN, while local preview remains usable with reporting disabled. Operators must validate a sanitized preview event and configure release artifacts/alerts before treating Sentry as production observability.
+
+## 2026-07-21: Production readiness requires anonymous background-worker heartbeats
+
+Status: Accepted
+
+Context: Meal analysis, private-image retention, and stale provider refresh run in separate processes. Database and Redis readiness alone cannot tell an operator whether those processes are actually running, while persisting hostnames or device identifiers would add unnecessary operational data.
+
+Decision: Each worker records a current heartbeat using only its static worker type and a random identifier generated for the life of that process. The API returns aggregate healthy/stale status by worker type through `GET /api/v1/health/ready` and a protected metric; it never returns or logs the random identifier. Production startup requires heartbeat enforcement and a timeout longer than every worker poll interval. The retention worker removes stale rows in bounded batches. Local preview keeps the signal advisory because normal phone development starts only the analysis worker.
+
+Consequences: A production readiness probe fails closed when meal analysis, image retention, or source refresh stops reporting, without exposing process or customer metadata. Deployment operators must run all three workers, scrape the aggregate gauge, and configure alerts before relying on the signal as an incident response control. This does not prove cloud-worker deployment, alert delivery, or worker throughput.
+
+## 2026-07-21: Saved-meal edits require an optimistic revision precondition
+
+Status: Accepted
+
+Context: A person can open the same saved meal on more than one device. Replacing a meal's item snapshots from a stale editor would silently discard newer portion, food, or time corrections and compromise diary trust.
+
+Decision: Add a positive integer revision to each saved meal. The API returns it in every meal response and requires a single quoted `If-Match` revision for `PATCH /meals/{id}`. The update conditionally claims that revision before changing meal fields or item snapshots; a missing precondition returns `428`, a malformed value returns `400`, and a stale value returns `409` without persisting any part of the request. Meal Detail preserves local edits after a conflict and requires an explicit reload of the newer meal before another save.
+
+Consequences: Direct mobile meal edits no longer silently overwrite a newer save. This is not offline edit synchronization or automatic merging: queued meal edits, competing-version comparison, deletion preconditions, and concurrency rules for other mutable resources remain separate product decisions.
+
+## 2026-07-21: Confirmed added oil remains separate from the food source basis
+
+Status: Accepted
+
+Context: A saved meal can include a provider-backed food and a user-confirmed amount of added cooking oil. Treating the stored total nutrients as if they were the food's per-100g source basis causes later portion edits to rescale the oil, and splitting an item can count the same oil twice.
+
+Decision: Preserve the food's base per-100g nutrients in each saved-item snapshot. Store `addedOilGrams` separately, calculate it as 9 kcal and 1 g fat per gram, and apply it only after scaling the source food to the confirmed portion. A preparation value is stored as user-confirmed descriptive context and does not change provider nutrients. The saved-meal editor labels this control as oil rather than treating butter as nutritionally interchangeable.
+
+Consequences: Portion edits, source replacements, and splits retain the confirmed oil amount correctly and preserve the underlying provider provenance. Existing snapshots without a per-100g base derive one by subtracting their separately stored oil before scaling. Butter, sauces, and other add-ons remain source-backed foods or future dedicated flows rather than being inferred from an oil-only calculation.
+
+## 2026-07-21: Provider-catalog search requires an authenticated account
+
+Status: Accepted
+
+Context: Food search can issue external USDA and Open Food Facts requests. Leaving that route anonymous would make the API an external-provider proxy that could be abused without a Living Nutrition session. The mobile product already gates its core flows behind account setup, while user-created foods must remain private to their owner.
+
+Decision: Require `ensure_current_user` for `GET /api/v1/foods/search`. The catalog remains shared between signed-in accounts and retains its separate IP-based request limit. Custom foods remain excluded from the shared search/cache path and are available only through owner-scoped custom-food routes.
+
+Consequences: Anonymous production requests receive the standard `401` envelope before a provider lookup. Local development preview remains usable through the explicit development-auth compatibility setting. The current search budget is still IP-based; production traffic must validate whether a separate per-user catalog limit is needed.
+
+## 2026-07-22: Saved-food organization is private account metadata
+
+Status: Accepted
+
+Context: A food source record can be shared provider data or a reusable custom record, while repeat-logging labels such as `Breakfast` or `Meal prep` express one person's private organization. Storing those labels on the source record would leak user preference into shared nutrition provenance and could misrepresent historical meal data.
+
+Decision: Store organization tags only through the current user's favorite-food association. Return them only with that user's favorite list and data export, and never use them to mutate provider nutrients, source references, quality assessment, custom-food ownership, or saved meal snapshots.
+
+Consequences: The Saved Foods screen can search, filter, and edit up to ten private tags per favorite without affecting other accounts. Tag updates are owner-scoped and a missing or cross-account favorite returns the existing safe `404` behavior. Folders, shared collections, recipe organization, and automatic grouping remain separate product decisions.
+
+## 2026-07-22: Weight comparisons report evidence and historical goal context, not progress verdicts
+
+Status: Accepted
+
+Context: Profile could compare recent weights with today's maintain/cut/gain preference entirely on-device. That lost the selected date range, could not show which check-ins were included, and risked implying that short-term changes proved alignment with a goal. Effective-dated nutrition targets existed, but their associated direction was not retained historically.
+
+Decision: Store an optional `goalDirection` on each effective-dated nutrition-goal revision when Profile saves a goal. Extend the existing range-insights response with a server-calculated weight comparison that contains only entries inside the requested period, the first/last dates, entry count, observation days, gram change, trend, goal-revision count, and direction context. Require two entries to calculate a change and three entries spanning seven days for an `observed` status; otherwise report `insufficient_data` or `limited`. Keep the wording descriptive and explicitly non-predictive. Do not infer direction for older revisions that lack it.
+
+Consequences: Progress can show transparent selected-period evidence and identify direction changes without silently applying today's preference to past dates. Older historical goals remain usable for calories/macros but show unavailable direction context. This is not a clinical trend, a recommendation engine, or statistical smoothing; any longer-term aggregation requires a separate product and safety decision.
+
+## 2026-07-22: Recipe folders are private organization links
+
+Status: Accepted
+
+Context: Tags allow flexible private labels, but a library also needs one simple, scannable grouping for repeat meals. Storing that grouping on shared provider data or copying it into meal snapshots would leak personal organization into nutrition provenance and could rewrite history.
+
+Decision: Allow each recipe to reference zero or one owner-scoped `RecipeFolder`, while retaining independent private tags. Folder CRUD is owner-scoped. Deleting a folder unfiles that owner's linked recipes by clearing only `folderId`; it does not delete recipes, change recipe items, modify provider data, or alter meals already logged from a recipe.
+
+Consequences: The mobile library can create, assign, unfile, and filter folders without treating organization as nutrition evidence. Folder names and recipe folder metadata are included in the account export. Shared folders, recipe favorites, automatic grouping, and server-side recipe search/pagination remain separate product decisions.
+
+Update 2026-07-22: The earlier statement that recipe favorites remained separate is superseded by the private recipe-favorite decision below. This folder decision otherwise remains accepted.
+
+## 2026-07-22: Recipe favorites remain private organization metadata
+
+Status: Accepted
+
+Context: A person may want fast access to a preferred reusable recipe, but a favorite is a personal library preference rather than a property of its source foods, nutrition calculation, or a meal already logged from the recipe.
+
+Decision: Store `isFavorite` only on the owner-scoped recipe. Expose the flag through the existing owner-scoped recipe create/update/read contract and use it solely for client-side library filtering and display. Do not copy it into recipe items or meal snapshots.
+
+Consequences: Favorite recipes can be toggled without re-querying providers or changing nutrients, provenance, folder assignments, tags, or historical meals. The status is included in the current-user recipe export and removed with the recipe/account. Shared or recommended favorites remain separate product decisions.

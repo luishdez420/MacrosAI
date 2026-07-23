@@ -99,8 +99,8 @@ class Settings(BaseSettings):
     trusted_proxy_cidrs: str = ""
     rate_limit_auth_max_requests: int = Field(default=12, ge=1, le=500)
     rate_limit_auth_window_seconds: int = Field(default=60, ge=1, le=3600)
-    # Public provider-catalog search is deliberately bounded independently
-    # from credential and paid-analysis operations.
+    # Authenticated provider-catalog search is bounded independently from
+    # credential and paid-analysis operations.
     rate_limit_food_search_max_requests: int = Field(default=30, ge=1, le=1_000)
     rate_limit_food_search_window_seconds: int = Field(default=60, ge=1, le=3_600)
     rate_limit_analysis_max_requests: int = Field(default=12, ge=1, le=500)
@@ -133,6 +133,16 @@ class Settings(BaseSettings):
     analysis_job_lease_seconds: int = Field(default=300, ge=30, le=3600)
     analysis_job_expiry_hours: int = Field(default=24, ge=1, le=168)
     analysis_job_worker_poll_seconds: int = Field(default=3, ge=1, le=60)
+    # Every independently deployed worker persists only an anonymous process
+    # heartbeat. Preview keeps this advisory; production fails readiness when
+    # a required worker stops reporting before this bounded timeout.
+    background_worker_heartbeats_required: bool = False
+    background_worker_heartbeat_ttl_seconds: int = Field(default=1_800, ge=30, le=172_800)
+    background_worker_heartbeat_retention_seconds: int = Field(
+        default=86_400,
+        ge=300,
+        le=2_592_000,
+    )
     # Local storage is intentionally preview/test only. It exposes no URL and
     # is a seam for the future S3-compatible production implementation.
     image_storage_backend: Literal["local", "s3"] = "local"
@@ -235,6 +245,19 @@ class Settings(BaseSettings):
             if not self.metrics_enabled or not self.metrics_bearer_token:
                 raise ValueError(
                     "METRICS_ENABLED must be true and METRICS_BEARER_TOKEN must be set in production."
+                )
+            if not self.background_worker_heartbeats_required:
+                raise ValueError(
+                    "BACKGROUND_WORKER_HEARTBEATS_REQUIRED must be true in production."
+                )
+            longest_worker_cycle = max(
+                self.image_retention_worker_poll_seconds,
+                self.analysis_job_worker_poll_seconds,
+                self.food_source_refresh_worker_poll_seconds,
+            )
+            if self.background_worker_heartbeat_ttl_seconds <= longest_worker_cycle:
+                raise ValueError(
+                    "BACKGROUND_WORKER_HEARTBEAT_TTL_SECONDS must exceed every worker poll interval."
                 )
             if not self.sentry_dsn:
                 raise ValueError("SENTRY_DSN must be set in production.")

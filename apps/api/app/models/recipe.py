@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
@@ -14,6 +14,12 @@ class Recipe(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    is_favorite: Mapped[bool] = mapped_column(Boolean, default=False)
+    folder_id: Mapped[str | None] = mapped_column(
+        ForeignKey("recipe_folders.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     name: Mapped[str] = mapped_column(String(256))
     meal_type: Mapped[str] = mapped_column(String(32), default="meal")
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -31,6 +37,21 @@ class Recipe(Base):
         passive_deletes=True,
         order_by="RecipeItem.sort_order, RecipeItem.created_at",
     )
+    folder: Mapped["RecipeFolder | None"] = relationship(back_populates="recipes")
+
+
+class RecipeFolder(Base):
+    """A private, single-folder grouping for an account's saved recipes."""
+
+    __tablename__ = "recipe_folders"
+    __table_args__ = (UniqueConstraint("user_id", "name", name="uq_recipe_folders_user_name"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    recipes: Mapped[list[Recipe]] = relationship(back_populates="folder")
 
 
 class RecipeItem(Base):
@@ -72,3 +93,29 @@ class RecipeItem(Base):
     )
 
     recipe: Mapped[Recipe] = relationship(back_populates="items")
+
+
+class RecipeTag(Base):
+    """A private organization label owned by one account."""
+
+    __tablename__ = "recipe_tags"
+    __table_args__ = (UniqueConstraint("user_id", "name", name="uq_recipe_tags_user_name"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(48))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class RecipeTagAssignment(Base):
+    """Associates a saved recipe with one of its owner's private tags."""
+
+    __tablename__ = "recipe_tag_assignments"
+    __table_args__ = (
+        UniqueConstraint("recipe_id", "recipe_tag_id", name="uq_recipe_tag_assignments_recipe_tag"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    recipe_id: Mapped[str] = mapped_column(ForeignKey("recipes.id", ondelete="CASCADE"), index=True)
+    recipe_tag_id: Mapped[str] = mapped_column(ForeignKey("recipe_tags.id", ondelete="CASCADE"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

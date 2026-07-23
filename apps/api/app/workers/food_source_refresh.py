@@ -27,6 +27,8 @@ from app.db.session import SessionLocal
 from app.models.food import FoodSourceRecord
 from app.nutrition.provider_registry import NutritionProviderRegistry, get_provider_registry
 from app.schemas.food import ProviderName
+from app.services.worker_heartbeats import FOOD_SOURCE_REFRESH_WORKER, heartbeat_worker
+from app.workers.startup import ensure_worker_database_ready
 
 logger = structlog.get_logger(__name__)
 
@@ -44,6 +46,7 @@ async def run_once(
     a malformed source record or transient provider issue cannot stop a sweep.
     """
 
+    heartbeat_worker(FOOD_SOURCE_REFRESH_WORKER, session_factory=session_factory)
     limit = settings.food_source_refresh_worker_batch_size if batch_size is None else batch_size
     source_record_ids = select_due_source_record_ids(session_factory=session_factory, limit=limit)
     active_registry = registry or get_provider_registry()
@@ -104,6 +107,7 @@ def select_due_source_record_ids(*, session_factory: Callable[[], Session], limi
 
 def main() -> None:
     configure_logging()
+    ensure_worker_database_ready()
     logger.info(
         "food_source_refresh_worker_started",
         poll_seconds=settings.food_source_refresh_worker_poll_seconds,

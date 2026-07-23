@@ -4,6 +4,7 @@ from app.api.v1 import router as api_router_module
 from app.core.config import settings
 from app.core.metrics import metrics
 from app.main import app
+from app.services.worker_heartbeats import WorkerHealthReport
 
 
 def test_metrics_endpoint_is_hidden_when_disabled(monkeypatch) -> None:
@@ -52,3 +53,36 @@ def test_metrics_emit_normalized_routes_rate_limit_outcomes_and_readiness_gauges
     assert 'living_nutrition_dependency_healthy{dependency="provider_circuit_breaker"} 1' in body
     assert "requestId" not in body
     assert "127.0.0.1" not in body
+
+
+def test_readiness_emits_aggregate_background_worker_health_metrics(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "metrics_enabled", True)
+    monkeypatch.setattr(settings, "metrics_bearer_token", "test-scrape-token")
+    monkeypatch.setattr(settings, "background_worker_heartbeats_required", True)
+    monkeypatch.setattr(
+        api_router_module,
+        "database_health",
+        lambda: {"connected": True, "schemaReady": True},
+    )
+    monkeypatch.setattr(
+        api_router_module,
+        "background_worker_health",
+        lambda: WorkerHealthReport(
+            required=True,
+            healthy=True,
+            backend="database",
+            workers={
+                "meal_analysis": True,
+                "image_retention": True,
+                "food_source_refresh": True,
+            },
+        ),
+    )
+
+    client = TestClient(app)
+    assert client.get("/api/v1/health/ready").status_code == 200
+    body = client.get("/metrics", headers={"Authorization": "Bearer test-scrape-token"}).text
+
+    assert 'living_nutrition_background_worker_healthy{worker="meal_analysis"} 1' in body
+    assert 'living_nutrition_background_worker_healthy{worker="image_retention"} 1' in body
+    assert 'living_nutrition_background_worker_healthy{worker="food_source_refresh"} 1' in body
