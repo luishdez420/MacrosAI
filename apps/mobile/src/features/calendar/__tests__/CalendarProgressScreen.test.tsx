@@ -117,6 +117,15 @@ describe("CalendarProgressScreen", () => {
     });
   });
 
+  it("rounds the monthly calorie average so the compact metric remains readable", async () => {
+    mockGetMonthlyInsights.mockResolvedValue(monthlyInsights({ averageCalories: 268.6 }));
+
+    const view = await renderWithQueryClient(<CalendarProgressScreen />);
+
+    await waitFor(() => expect(view.getByText("269")).toBeTruthy());
+    expect(view.queryByText("268.6")).toBeNull();
+  });
+
   it("summarizes meal, protein, and fiber logging coverage from saved day totals", async () => {
     mockGetRangeInsights.mockResolvedValue(
       rangeInsights({
@@ -302,7 +311,13 @@ function rangeInsights(
   };
 }
 
-function monthlyInsights() {
+function monthlyInsights(
+  overrides: Partial<{
+    averageCalories: number;
+    goalDays: number;
+    loggedDays: number;
+  }> = {}
+) {
   return {
     month: "2026-07",
     startDate: "2026-07-01",
@@ -316,6 +331,7 @@ function monthlyInsights() {
       insightDay("2026-07-02", 0, 0, false),
       insightDay("2026-07-03", 2150, 118, true),
     ],
+    ...overrides,
   };
 }
 

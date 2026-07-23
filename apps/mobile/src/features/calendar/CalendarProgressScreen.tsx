@@ -188,7 +188,7 @@ export function CalendarProgressScreen() {
 
       <View style={styles.metricRow}>
         <MacroStatTile valueMaxFontSizeMultiplier={1.2} valueStyle={styles.metricValue} label="Goal days" value={goalMetCount} suffix={`/${rangeDuration}`} tone="success" />
-        <MacroStatTile valueMaxFontSizeMultiplier={1.2} valueStyle={styles.metricValue} label="Avg kcal" value={averageCalories || "-"} tone="neutral" />
+        <MacroStatTile valueMaxFontSizeMultiplier={1.2} valueStyle={styles.metricValue} label="Avg kcal" value={formatAverageCalories(averageCalories)} tone="neutral" />
         <MacroStatTile valueMaxFontSizeMultiplier={1.2} valueStyle={styles.metricValue} label="Avg protein" value={averageProtein ? Math.round(averageProtein) : "-"} suffix={averageProtein ? "g" : undefined} tone="protein" />
       </View>
 
@@ -268,10 +268,10 @@ export function CalendarProgressScreen() {
             tone="success"
           />
           <MacroStatTile
-            valueMaxFontSizeMultiplier={1.2}
-            valueStyle={styles.metricValue}
+            valueMaxFontSizeMultiplier={1.1}
+            valueStyle={styles.monthlyCalorieMetricValue}
             label="Avg kcal"
-            value={monthlyInsights.data?.averageCalories || "-"}
+            value={formatAverageCalories(monthlyInsights.data?.averageCalories)}
             tone="carbs"
           />
         </View>
@@ -280,6 +280,10 @@ export function CalendarProgressScreen() {
       </Card>
     </ScreenShell>
   );
+}
+
+function formatAverageCalories(value: number | undefined) {
+  return value && Number.isFinite(value) ? Math.round(value) : "-";
 }
 
 function ProgressChart({
@@ -680,6 +684,11 @@ const styles = StyleSheet.create({
     fontSize: 22,
     lineHeight: 26,
     letterSpacing: -0.4,
+  },
+  monthlyCalorieMetricValue: {
+    fontSize: 18,
+    lineHeight: 22,
+    letterSpacing: -0.2,
   },
   monthMetricRow: {
     marginBottom: spacing.md,
