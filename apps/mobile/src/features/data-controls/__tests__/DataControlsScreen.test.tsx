@@ -152,20 +152,20 @@ describe("DataControlsScreen", () => {
     expect(view.getByText(/temporary JSON export file was removed from the app cache/)).toBeTruthy();
   });
 
-  it("requires DELETE before removing the Living Nutrition profile and clears account-scoped queued meals", async () => {
+  it("requires DELETE before removing app data and clears account-scoped queued meals", async () => {
     const view = await renderScreen();
-    await view.findByText("Delete Living Nutrition profile");
+    await view.findByText("Delete app data");
     await view.findByDisplayValue("30");
 
-    fireEvent.press(view.getByLabelText("Review profile deletion"));
-    await view.findByText("Confirm permanent profile deletion");
+    fireEvent.press(view.getByLabelText("Review app-data deletion"));
+    await view.findByText("Confirm permanent app-data deletion");
     expect(view.getByText(/does not delete your Clerk identity/)).toBeTruthy();
-    expect(view.getByLabelText("Delete Living Nutrition profile").props.accessibilityState.disabled).toBe(true);
+    expect(view.getByLabelText("Delete app data").props.accessibilityState.disabled).toBe(true);
 
-    fireEvent.changeText(view.getByLabelText("Type DELETE to confirm Living Nutrition profile deletion"), "DELETE");
+    fireEvent.changeText(view.getByLabelText("Type DELETE to confirm app-data deletion"), "DELETE");
     await view.findByDisplayValue("DELETE");
     await act(async () => {
-      fireEvent.press(view.getByLabelText("Delete Living Nutrition profile"));
+      fireEvent.press(view.getByLabelText("Delete app data"));
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
     });
     await waitFor(() => {

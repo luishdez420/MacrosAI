@@ -724,13 +724,13 @@ export function ProfileScreen() {
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel="Open data controls"
-                accessibilityHint="Review export, retention preference, and Living Nutrition profile deletion controls"
+                accessibilityHint="Review export, retention preference, and app-data deletion controls"
                 style={styles.dataControlsLink}
               >
                 <Card tone="soft">
                   <SectionHeader title="Data controls" meta="Privacy" />
                   <Text style={styles.body}>
-                    Review your local export, image-retention preference, and account deletion controls in one focused place.
+                    Review your local export, image-retention preference, and app-data deletion controls in one focused place.
                   </Text>
                   <Text style={styles.dataControlsLinkText}>Review data controls</Text>
                 </Card>

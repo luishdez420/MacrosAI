@@ -353,21 +353,21 @@ export function DataControlsScreen() {
           </Card>
 
           <Card tone="soft">
-            <SectionHeader title="Delete Living Nutrition profile" meta="Irreversible" />
-            <Text style={[styles.body, { color: palette.muted }]}>This removes this Living Nutrition profile, meals, recipes, goals, weight, hydration, saved foods, local queued meals, and any remaining private image assets from this API and device. It cannot be undone. It does not delete your Clerk identity or data held by other services.</Text>
+            <SectionHeader title="Delete app data" meta="Irreversible" />
+            <Text style={[styles.body, { color: palette.muted }]}>This permanently removes your Living Nutrition app data: meals, recipes, goals, weight, hydration, saved foods, local queued meals, and any remaining private image assets from this API and device. It does not delete your Clerk identity or data held by other services.</Text>
             {!deleteOpen ? (
               <ActionButton
-                label="Review profile deletion"
+                label="Review app-data deletion"
                 variant="secondary"
                 onPress={beginDelete}
-                accessibilityHint="Opens an irreversible Living Nutrition profile deletion confirmation."
+                accessibilityHint="Opens an irreversible Living Nutrition app-data deletion confirmation."
               />
             ) : (
               <View style={[styles.deleteConfirmation, { backgroundColor: palette.dangerSurface, borderColor: palette.border }]}>
-                <Text style={[styles.deleteTitle, { color: palette.dangerText }]}>Confirm permanent profile deletion</Text>
+                <Text style={[styles.deleteTitle, { color: palette.dangerText }]}>Confirm permanent app-data deletion</Text>
                 <Text style={[styles.body, { color: palette.muted }]}>Type DELETE below to continue. This does not create a reversible archive, delete your Clerk identity, or delete data from systems outside Living Nutrition.</Text>
                 <TextInput
-                  accessibilityLabel="Type DELETE to confirm Living Nutrition profile deletion"
+                  accessibilityLabel="Type DELETE to confirm app-data deletion"
                   autoCapitalize="characters"
                   autoCorrect={false}
                   onChangeText={setDeleteConfirmation}
@@ -379,12 +379,12 @@ export function DataControlsScreen() {
                 <View style={styles.deleteActions}>
                   <ActionButton label="Cancel" variant="secondary" onPress={cancelDelete} style={styles.deleteAction} />
                   <ActionButton
-                    label={deleteMutation.isPending ? "Deleting Living Nutrition profile..." : "Delete Living Nutrition profile"}
+                    label={deleteMutation.isPending ? "Deleting app data..." : "Delete app data"}
                     variant="ghost"
                     onPress={deleteAccount}
                     disabled={deleteMutation.isPending || deleteConfirmation.trim().toUpperCase() !== "DELETE"}
                     style={styles.deleteAction}
-                    accessibilityHint="Permanently deletes the current Living Nutrition profile after the confirmation word matches."
+                    accessibilityHint="Permanently deletes the current Living Nutrition app data after the confirmation word matches."
                   />
                 </View>
               </View>
