@@ -1,7 +1,10 @@
-import { fireEvent, render, waitFor } from "@testing-library/react-native";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { act, fireEvent, render, waitFor } from "@testing-library/react-native";
+import { Text } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
 import {
+  ClerkApiBridge,
   ClerkAuthScreen,
   actionLabel,
   clerkErrorMessage,
@@ -19,6 +22,15 @@ const mockSignIn = {
   ],
 };
 const mockSetActive = jest.fn();
+const mockAuthState = {
+  getToken: jest.fn(),
+  isLoaded: true,
+  isSignedIn: false,
+  signOut: jest.fn(),
+  userId: null as string | null,
+};
+const mockGetSession = jest.fn();
+const mockConfigureManagedAuth = jest.fn();
 const mockSignUp = {
   attemptEmailAddressVerification: jest.fn(),
   create: jest.fn(),
@@ -34,7 +46,7 @@ const mockSignUp = {
 
 jest.mock("@clerk/clerk-expo", () => ({
   ClerkProvider: ({ children }: { children: unknown }) => children,
-  useAuth: () => ({ isLoaded: true, isSignedIn: false, getToken: jest.fn(), signOut: jest.fn() }),
+  useAuth: () => mockAuthState,
   useSignIn: () => ({ isLoaded: true, signIn: mockSignIn, setActive: mockSetActive }),
   useSignUp: () => ({ isLoaded: true, signUp: mockSignUp, setActive: mockSetActive }),
   useSSO: () => ({ startSSOFlow: jest.fn() }),
@@ -43,6 +55,12 @@ jest.mock("@clerk/clerk-expo", () => ({
 }));
 
 jest.mock("expo-linking", () => ({ createURL: jest.fn(() => "livingnutrition:///") }));
+
+jest.mock("../../../services/api", () => ({
+  api: { getSession: (...args: unknown[]) => mockGetSession(...args) },
+  configureManagedAuth: (...args: unknown[]) => mockConfigureManagedAuth(...args),
+  signOutStoredSession: jest.fn(),
+}));
 
 describe("ClerkAuthScreen", () => {
   beforeEach(() => {
@@ -68,6 +86,12 @@ describe("ClerkAuthScreen", () => {
     mockSignUp.missingFields = [];
     mockSignUp.username = null;
     mockSetActive.mockResolvedValue(undefined);
+    mockAuthState.isLoaded = true;
+    mockAuthState.isSignedIn = false;
+    mockAuthState.userId = null;
+    mockGetSession.mockReset();
+    mockGetSession.mockResolvedValue({ id: "profile" });
+    mockConfigureManagedAuth.mockReset();
   });
 
   it("uses Clerk's recovery-code flow without handling a local password reset", async () => {
@@ -312,19 +336,67 @@ describe("ClerkAuthScreen", () => {
       "a username, acceptance of the legal terms"
     );
   });
+
+  it("clears account-bound cached data before a different Clerk user can see the app", async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mockAuthState.isSignedIn = true;
+    mockAuthState.userId = "user_first";
+    const view = await renderAuthBridge(queryClient);
+
+    await waitFor(() => expect(view.getByText("user_first")).toBeTruthy());
+
+    mockAuthState.userId = "user_second";
+    await act(async () => {
+      view.rerender(
+        <SafeAreaProvider initialMetrics={testSafeAreaMetrics}>
+          <ThemeProvider initialPreference="dark">
+            <QueryClientProvider client={queryClient}>
+              <ClerkApiBridge><AccountBoundProbe /></ClerkApiBridge>
+            </QueryClientProvider>
+          </ThemeProvider>
+        </SafeAreaProvider>
+      );
+    });
+
+    await waitFor(() => expect(view.queryByText("user_first")).toBeNull());
+    await waitFor(() => expect(view.getByText("user_second")).toBeTruthy());
+    view.unmount();
+    queryClient.clear();
+  });
 });
+
+function AccountBoundProbe() {
+  const account = useQuery({
+    queryKey: ["diary", "2026-07-23"],
+    queryFn: async () => mockAuthState.userId,
+  });
+
+  return <Text>{account.data ?? "Loading account"}</Text>;
+}
+
+async function renderAuthBridge(queryClient: QueryClient) {
+  return await render(
+    <SafeAreaProvider initialMetrics={testSafeAreaMetrics}>
+      <ThemeProvider initialPreference="dark">
+        <QueryClientProvider client={queryClient}>
+          <ClerkApiBridge><AccountBoundProbe /></ClerkApiBridge>
+        </QueryClientProvider>
+      </ThemeProvider>
+    </SafeAreaProvider>
+  );
+}
 
 async function renderScreen() {
   return await render(
-    <SafeAreaProvider
-      initialMetrics={{
-        frame: { x: 0, y: 0, width: 390, height: 844 },
-        insets: { top: 47, left: 0, right: 0, bottom: 34 },
-      }}
-    >
+    <SafeAreaProvider initialMetrics={testSafeAreaMetrics}>
       <ThemeProvider initialPreference="dark">
         <ClerkAuthScreen />
       </ThemeProvider>
     </SafeAreaProvider>
   );
 }
+
+const testSafeAreaMetrics = {
+  frame: { x: 0, y: 0, width: 390, height: 844 },
+  insets: { top: 47, left: 0, right: 0, bottom: 34 },
+};

@@ -22,13 +22,31 @@ export function ManagedAuthProvider({ children }: PropsWithChildren) {
   );
 }
 
-function ClerkApiBridge({ children }: PropsWithChildren) {
-  const { getToken, signOut, userId } = useAuth();
+export function ClerkApiBridge({ children }: PropsWithChildren) {
+  const queryClient = useQueryClient();
+  const { getToken, isLoaded, signOut, userId } = useAuth();
+  const accountScope = isLoaded ? userId ?? null : undefined;
+  const [readyAccountScope, setReadyAccountScope] = useState<string | null | undefined>(undefined);
 
   useEffect(() => {
     configureManagedAuth({ getToken, getUserId: () => userId ?? null, signOut });
     return () => configureManagedAuth(undefined);
   }, [getToken, signOut, userId]);
+
+  useEffect(() => {
+    if (accountScope === undefined || readyAccountScope === accountScope) {
+      return;
+    }
+
+    // Query keys intentionally describe resources rather than identities. Never
+    // let cached account data render while Clerk changes the active user.
+    queryClient.clear();
+    setReadyAccountScope(accountScope);
+  }, [accountScope, queryClient, readyAccountScope]);
+
+  if (accountScope === undefined || readyAccountScope !== accountScope) {
+    return <AuthLoadingScreen />;
+  }
 
   return <ClerkAccessGate>{children}</ClerkAccessGate>;
 }
