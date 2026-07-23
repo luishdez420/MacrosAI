@@ -2,6 +2,12 @@
 
 Living Nutrition is a production-oriented mobile nutrition tracker. Camera analysis identifies visible foods, matches USDA nutrition records, estimates portions with confidence notes, and lets users log or retake the scan.
 
+## Demo
+
+Watch the [physical-device preview demo](https://drive.google.com/file/d/1aDl_A52UCP31PpeCQrMo5EyOvITAjHkP/view?usp=sharing).
+
+The linked build uses the no-cost Render preview: Clerk sign-in, USDA-backed manual search, quick entry, custom foods, meal logging, diary, goals, hydration, and weight tracking are available. Camera and nutrition-label AI analysis are intentionally disabled because they require billable AI requests; this preview is not a production deployment and its free service can sleep after inactivity.
+
 ## Current Phase
 
 This repo is set up for Phase 1 and the beginning of Phase 2:
