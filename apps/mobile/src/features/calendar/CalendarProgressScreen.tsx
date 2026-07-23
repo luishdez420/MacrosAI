@@ -187,9 +187,9 @@ export function CalendarProgressScreen() {
       </Card>
 
       <View style={styles.metricRow}>
-        <MacroStatTile label="Goal days" value={goalMetCount} suffix={`/${rangeDuration}`} tone="success" />
-        <MacroStatTile label="Avg kcal" value={averageCalories || "-"} tone="neutral" />
-        <MacroStatTile label="Avg protein" value={averageProtein ? Math.round(averageProtein) : "-"} suffix={averageProtein ? "g" : undefined} tone="protein" />
+        <MacroStatTile style={styles.metricTile} label="Goal days" value={goalMetCount} suffix={`/${rangeDuration}`} tone="success" />
+        <MacroStatTile style={styles.metricTile} label="Avg kcal" value={averageCalories || "-"} tone="neutral" />
+        <MacroStatTile style={styles.metricTile} label="Avg protein" value={averageProtein ? Math.round(averageProtein) : "-"} suffix={averageProtein ? "g" : undefined} tone="protein" />
       </View>
 
       <Card tone="soft" style={styles.insightCard}>
@@ -203,9 +203,9 @@ export function CalendarProgressScreen() {
           <Text style={[styles.insightEyebrow, themed.insightText]}>Logging rhythm</Text>
           <Text style={[styles.insightTitle, themed.ink]}>{loggingRhythmCopy(loggedDays, proteinLoggedDays, fiberLoggedDays, rangeDuration)}</Text>
           <View style={styles.metricRow}>
-            <MacroStatTile label="Meal days" value={loggedDays} suffix={`/${rangeDuration}`} tone="neutral" />
-            <MacroStatTile label="Protein days" value={proteinLoggedDays} suffix="days" tone="protein" />
-            <MacroStatTile label="Fiber days" value={fiberLoggedDays} suffix="days" tone="success" />
+            <MacroStatTile style={styles.metricTile} label="Meal days" value={loggedDays} suffix={`/${rangeDuration}`} tone="neutral" />
+            <MacroStatTile style={styles.metricTile} label="Protein days" value={proteinLoggedDays} tone="protein" />
+            <MacroStatTile style={styles.metricTile} label="Fiber days" value={fiberLoggedDays} tone="success" />
           </View>
           <Text style={[styles.body, themed.muted]}>This reflects what was saved in your diary, not a nutrition grade or recommendation.</Text>
         </View>
@@ -670,7 +670,12 @@ const styles = StyleSheet.create({
   },
   metricRow: {
     flexDirection: "row",
+    flexWrap: "wrap",
     gap: spacing.md,
+  },
+  metricTile: {
+    flexBasis: "46%",
+    flexGrow: 1,
   },
   monthMetricRow: {
     marginBottom: spacing.md,

@@ -143,7 +143,7 @@ describe("CalendarProgressScreen", () => {
     expect(view.getByText("Meal days")).toBeTruthy();
     expect(view.getByText("Protein days")).toBeTruthy();
     expect(view.getByText("Fiber days")).toBeTruthy();
-    expect(view.getAllByText("2 days").length).toBeGreaterThanOrEqual(2);
+    expect(view.getAllByText("2").length).toBeGreaterThanOrEqual(2);
     expect(view.getByLabelText(/This is a diary pattern, not a nutrition grade/)).toBeTruthy();
   });
 
