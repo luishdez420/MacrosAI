@@ -249,19 +249,21 @@ export function MacroStatTile({
   suffix,
   tone = "neutral",
   style,
+  valueStyle,
 }: {
   label: string;
   value: string | number;
   suffix?: string;
   tone?: Tone;
   style?: StyleProp<ViewStyle>;
+  valueStyle?: StyleProp<TextStyle>;
 }) {
   const { palette } = useTheme();
   return (
     <GlassSurface level="utility" blur={false} style={[styles.macroTile, macroTileToneStyle(tone, palette), style]}>
       <Text
         numberOfLines={1}
-        style={[styles.macroValue, macroToneStyles[tone]]}
+        style={[styles.macroValue, macroToneStyles[tone], valueStyle]}
       >
         {formatMacroValue(value, suffix)}
       </Text>

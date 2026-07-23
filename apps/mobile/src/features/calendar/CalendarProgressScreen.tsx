@@ -187,9 +187,9 @@ export function CalendarProgressScreen() {
       </Card>
 
       <View style={styles.metricRow}>
-        <MacroStatTile style={styles.metricTile} label="Goal days" value={goalMetCount} suffix={`/${rangeDuration}`} tone="success" />
-        <MacroStatTile style={styles.metricTile} label="Avg kcal" value={averageCalories || "-"} tone="neutral" />
-        <MacroStatTile style={styles.metricTile} label="Avg protein" value={averageProtein ? Math.round(averageProtein) : "-"} suffix={averageProtein ? "g" : undefined} tone="protein" />
+        <MacroStatTile valueStyle={styles.metricValue} label="Goal days" value={goalMetCount} suffix={`/${rangeDuration}`} tone="success" />
+        <MacroStatTile valueStyle={styles.metricValue} label="Avg kcal" value={averageCalories || "-"} tone="neutral" />
+        <MacroStatTile valueStyle={styles.metricValue} label="Avg protein" value={averageProtein ? Math.round(averageProtein) : "-"} suffix={averageProtein ? "g" : undefined} tone="protein" />
       </View>
 
       <Card tone="soft" style={styles.insightCard}>
@@ -203,9 +203,9 @@ export function CalendarProgressScreen() {
           <Text style={[styles.insightEyebrow, themed.insightText]}>Logging rhythm</Text>
           <Text style={[styles.insightTitle, themed.ink]}>{loggingRhythmCopy(loggedDays, proteinLoggedDays, fiberLoggedDays, rangeDuration)}</Text>
           <View style={styles.metricRow}>
-            <MacroStatTile style={styles.metricTile} label="Meal days" value={loggedDays} suffix={`/${rangeDuration}`} tone="neutral" />
-            <MacroStatTile style={styles.metricTile} label="Protein days" value={proteinLoggedDays} tone="protein" />
-            <MacroStatTile style={styles.metricTile} label="Fiber days" value={fiberLoggedDays} tone="success" />
+            <MacroStatTile valueStyle={styles.metricValue} label="Meal days" value={loggedDays} suffix={`/${rangeDuration}`} tone="neutral" />
+            <MacroStatTile valueStyle={styles.metricValue} label="Protein days" value={proteinLoggedDays} tone="protein" />
+            <MacroStatTile valueStyle={styles.metricValue} label="Fiber days" value={fiberLoggedDays} tone="success" />
           </View>
           <Text style={[styles.body, themed.muted]}>This reflects what was saved in your diary, not a nutrition grade or recommendation.</Text>
         </View>
@@ -254,18 +254,19 @@ export function CalendarProgressScreen() {
         </Text>
         <View testID="monthly-rhythm-metrics" style={[styles.metricRow, styles.monthMetricRow]}>
           <MacroStatTile
-            label="Logged"
+            valueStyle={styles.metricValue}
+            label="Logged days"
             value={monthlyInsights.data?.loggedDays ?? "-"}
-            suffix={monthlyInsights.data ? "days" : undefined}
             tone="neutral"
           />
           <MacroStatTile
+            valueStyle={styles.metricValue}
             label="Goal days"
             value={monthlyInsights.data?.goalDays ?? "-"}
-            suffix={monthlyInsights.data ? "days" : undefined}
             tone="success"
           />
           <MacroStatTile
+            valueStyle={styles.metricValue}
             label="Avg kcal"
             value={monthlyInsights.data?.averageCalories || "-"}
             tone="carbs"
@@ -670,12 +671,12 @@ const styles = StyleSheet.create({
   },
   metricRow: {
     flexDirection: "row",
-    flexWrap: "wrap",
     gap: spacing.md,
   },
-  metricTile: {
-    flexBasis: "46%",
-    flexGrow: 1,
+  metricValue: {
+    fontSize: 24,
+    lineHeight: 28,
+    letterSpacing: -0.4,
   },
   monthMetricRow: {
     marginBottom: spacing.md,
