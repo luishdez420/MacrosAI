@@ -250,6 +250,7 @@ export function MacroStatTile({
   tone = "neutral",
   style,
   valueStyle,
+  valueMaxFontSizeMultiplier,
 }: {
   label: string;
   value: string | number;
@@ -257,11 +258,13 @@ export function MacroStatTile({
   tone?: Tone;
   style?: StyleProp<ViewStyle>;
   valueStyle?: StyleProp<TextStyle>;
+  valueMaxFontSizeMultiplier?: number;
 }) {
   const { palette } = useTheme();
   return (
     <GlassSurface level="utility" blur={false} style={[styles.macroTile, macroTileToneStyle(tone, palette), style]}>
       <Text
+        maxFontSizeMultiplier={valueMaxFontSizeMultiplier}
         numberOfLines={1}
         style={[styles.macroValue, macroToneStyles[tone], valueStyle]}
       >
