@@ -260,8 +260,6 @@ export function MacroStatTile({
   return (
     <GlassSurface level="utility" blur={false} style={[styles.macroTile, macroTileToneStyle(tone, palette), style]}>
       <Text
-        adjustsFontSizeToFit
-        minimumFontScale={0.68}
         numberOfLines={1}
         style={[styles.macroValue, macroToneStyles[tone]]}
       >

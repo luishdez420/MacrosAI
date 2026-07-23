@@ -99,7 +99,7 @@ describe("ActionButton", () => {
 
     const value = view.getByText("5 days");
     expect(value.props.numberOfLines).toBe(1);
-    expect(value.props.adjustsFontSizeToFit).toBe(true);
+    expect(value.props.adjustsFontSizeToFit).toBeUndefined();
     expect(formatMacroValue(128, "g")).toBe("128g");
     expect(formatMacroValue(2, "/7")).toBe("2/7");
   });

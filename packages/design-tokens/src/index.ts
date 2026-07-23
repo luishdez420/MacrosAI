@@ -253,8 +253,10 @@ export const themePalettes: Record<ResolvedTheme, ThemePalette> = {
     cardSoft: "rgba(245, 249, 241, 0.82)",
     cardAccent: "rgba(232, 245, 194, 0.86)",
     cardInsight: "rgba(229, 237, 248, 0.84)",
-    controlSurface: "rgba(255, 255, 255, 0.72)",
-    controlSurfaceMuted: "rgba(232, 241, 224, 0.96)",
+    // Controls need a distinct fill in light mode. Pure translucent white
+    // disappears into the page and makes inputs and secondary actions easy to miss.
+    controlSurface: "#EAF2E4",
+    controlSurfaceMuted: "#DCEAD4",
     progressTrack: "rgba(20, 37, 29, 0.10)",
     overlay: "rgba(20, 37, 29, 0.16)",
     onPrimary: colors.white,
