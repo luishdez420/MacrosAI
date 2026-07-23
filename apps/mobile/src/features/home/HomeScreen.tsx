@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { Link, useRouter } from "expo-router";
-import { AccessibilityInfo, Alert, Animated, PanResponder, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { AccessibilityInfo, Alert, Animated, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
@@ -33,26 +33,7 @@ import {
 import { useTheme } from "../../shared/theme/ThemeProvider";
 
 const fallbackCalorieGoal = 2200;
-const timelineSwipeRevealDistance = 92;
-const timelineSwipeCommitDistance = 56;
 type MacroFocus = "protein" | "carbs" | "fat";
-
-export type TimelineSwipeDestination = "edit" | "delete" | null;
-
-export function timelineSwipeDestination(
-  translationX: number,
-  velocityX = 0
-): TimelineSwipeDestination {
-  if (translationX >= timelineSwipeCommitDistance || velocityX >= 0.65) {
-    return "edit";
-  }
-
-  if (translationX <= -timelineSwipeCommitDistance || velocityX <= -0.65) {
-    return "delete";
-  }
-
-  return null;
-}
 
 export function HomeScreen() {
   const router = useRouter();
@@ -494,10 +475,6 @@ export function HomeScreen() {
                   <TimelineMealCard
                     key={meal.id}
                     index={index}
-                    mealName={readableFoodName(meal.name)}
-                    onEdit={() => router.push(`/meal/${meal.id}`)}
-                    onDelete={() => confirmDeleteMeal(meal)}
-                    deleteDisabled={deleteMealMutation.isPending}
                   >
                     <View style={styles.timelineTop}>
                       <MealTimelineVisual mealType={meal.mealType} />
@@ -909,81 +886,12 @@ function homeThemeStyles(palette: ThemePalette) {
 function TimelineMealCard({
   children,
   index,
-  mealName,
-  onEdit,
-  onDelete,
-  deleteDisabled,
 }: {
   children: ReactNode;
   index: number;
-  mealName: string;
-  onEdit: () => void;
-  onDelete: () => void;
-  deleteDisabled: boolean;
 }) {
   const entrance = useRef(new Animated.Value(0)).current;
-  const translationX = useRef(new Animated.Value(0)).current;
-  const currentTranslation = useRef(0);
   const reducedMotion = useReducedMotionPreference();
-  const reducedMotionRef = useRef(reducedMotion);
-  const revealedActionRef = useRef<TimelineSwipeDestination>(null);
-  const [revealedAction, setRevealedAction] = useState<TimelineSwipeDestination>(null);
-
-  useEffect(() => {
-    reducedMotionRef.current = reducedMotion;
-  }, [reducedMotion]);
-
-  const settleSwipe = (destination: TimelineSwipeDestination) => {
-    const nextTranslation =
-      destination === "edit"
-        ? timelineSwipeRevealDistance
-        : destination === "delete"
-          ? -timelineSwipeRevealDistance
-          : 0;
-
-    currentTranslation.current = nextTranslation;
-    setRevealedAction(destination);
-
-    if (destination && destination !== revealedActionRef.current && !reducedMotionRef.current) {
-      void Haptics.selectionAsync().catch(() => undefined);
-    }
-    revealedActionRef.current = destination;
-
-    if (reducedMotionRef.current) {
-      translationX.setValue(nextTranslation);
-      return;
-    }
-
-    Animated.spring(translationX, {
-      toValue: nextTranslation,
-      useNativeDriver: true,
-      speed: 22,
-      bounciness: 0,
-    }).start();
-  };
-
-  const panResponder = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => false,
-      onMoveShouldSetPanResponder: (_, gesture) =>
-        Math.abs(gesture.dx) > 8 && Math.abs(gesture.dx) > Math.abs(gesture.dy),
-      onPanResponderMove: (_, gesture) => {
-        const nextTranslation = Math.max(
-          -timelineSwipeRevealDistance,
-          Math.min(timelineSwipeRevealDistance, currentTranslation.current + gesture.dx)
-        );
-        translationX.setValue(nextTranslation);
-      },
-      onPanResponderRelease: (_, gesture) => {
-        const nextTranslation = Math.max(
-          -timelineSwipeRevealDistance,
-          Math.min(timelineSwipeRevealDistance, currentTranslation.current + gesture.dx)
-        );
-        settleSwipe(timelineSwipeDestination(nextTranslation, gesture.vx));
-      },
-      onPanResponderTerminate: () => settleSwipe(null),
-    })
-  ).current;
 
   useEffect(() => {
     if (reducedMotion) {
@@ -1014,47 +922,7 @@ function TimelineMealCard({
         ],
       }}
     >
-      <View style={styles.timelineSwipeContainer}>
-        <View
-          accessible={revealedAction !== null}
-          accessibilityElementsHidden={revealedAction === null}
-          importantForAccessibility={revealedAction === null ? "no-hide-descendants" : "yes"}
-          style={styles.timelineSwipeActions}
-        >
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={`Edit portions for ${mealName}`}
-            onPress={() => {
-              settleSwipe(null);
-              onEdit();
-            }}
-            style={[styles.timelineSwipeAction, styles.timelineSwipeEditAction]}
-          >
-            <Ionicons color={colors.white} name="create-outline" size={20} />
-            <Text style={styles.timelineSwipeActionText}>Edit</Text>
-          </Pressable>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={`Delete ${mealName}`}
-            disabled={deleteDisabled}
-            onPress={() => {
-              settleSwipe(null);
-              onDelete();
-            }}
-            style={[styles.timelineSwipeAction, styles.timelineSwipeDeleteAction, deleteDisabled && styles.timelineSwipeActionDisabled]}
-          >
-            <Ionicons color={colors.white} name="trash-outline" size={20} />
-            <Text style={styles.timelineSwipeActionText}>{deleteDisabled ? "Deleting" : "Delete"}</Text>
-          </Pressable>
-        </View>
-        <Animated.View
-          {...panResponder.panHandlers}
-          accessibilityHint="Swipe right to reveal edit or left to reveal delete. Standard edit and delete controls are below."
-          style={{ transform: [{ translateX: translationX }] }}
-        >
-          <Card style={styles.timelineCard}>{children}</Card>
-        </Animated.View>
-      </View>
+      <Card style={styles.timelineCard}>{children}</Card>
     </Animated.View>
   );
 }
@@ -1432,36 +1300,6 @@ const styles = StyleSheet.create({
   metricSkeleton: { flex: 1, minWidth: 0, borderRadius: radii.md },
   timelineCard: {
     gap: spacing.xs,
-  },
-  timelineSwipeContainer: {
-    borderRadius: radii.lg,
-    overflow: "hidden",
-  },
-  timelineSwipeActions: {
-    ...StyleSheet.absoluteFillObject,
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "stretch",
-  },
-  timelineSwipeAction: {
-    width: timelineSwipeRevealDistance,
-    alignItems: "center",
-    justifyContent: "center",
-    gap: spacing.xxs,
-  },
-  timelineSwipeEditAction: {
-    backgroundColor: colors.green,
-  },
-  timelineSwipeDeleteAction: {
-    backgroundColor: colors.coral,
-  },
-  timelineSwipeActionDisabled: {
-    opacity: 0.62,
-  },
-  timelineSwipeActionText: {
-    ...typography.caption,
-    color: colors.white,
-    fontWeight: "700",
   },
   timelineGroup: {
     gap: spacing.sm,

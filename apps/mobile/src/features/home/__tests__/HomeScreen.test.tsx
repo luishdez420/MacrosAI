@@ -11,7 +11,6 @@ import {
   loggingRhythmAccessibilityLabel,
   loggingRhythmCopy,
   timelineMealVisual,
-  timelineSwipeDestination,
 } from "../HomeScreen";
 
 const mockGetDiary = jest.fn();
@@ -235,14 +234,6 @@ describe("HomeScreen", () => {
     expect(loggingRhythmCopy(3, 7)).toBe("3 of 7 days logged");
     expect(loggingRhythmCopy(0, 7)).toBe("Your rhythm starts with one meal.");
     expect(loggingRhythmAccessibilityLabel(3, 7)).toContain("not a nutrition grade");
-  });
-
-  it("only reveals timeline actions after a deliberate horizontal swipe", () => {
-    expect(timelineSwipeDestination(24)).toBeNull();
-    expect(timelineSwipeDestination(56)).toBe("edit");
-    expect(timelineSwipeDestination(-56)).toBe("delete");
-    expect(timelineSwipeDestination(12, 0.7)).toBe("edit");
-    expect(timelineSwipeDestination(-12, -0.7)).toBe("delete");
   });
 
   it("uses a semantic category placeholder instead of claiming every meal has a photo", () => {
