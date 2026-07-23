@@ -33,7 +33,8 @@ Set these values only in the Render dashboard or a managed Render environment gr
 
 | Variable | Value or source |
 | --- | --- |
-| `CLERK_JWKS_URL`, `CLERK_ISSUER`, `CLERK_AUDIENCE` | Production Clerk tenant values |
+| `CLERK_JWKS_URL`, `CLERK_ISSUER` | Production Clerk tenant values |
+| `CLERK_AUDIENCE` | Optional: set only when the mobile app requests a custom Clerk JWT template containing a matching `aud` claim. |
 | `ADMIN_CLERK_SUBJECTS` | Comma-separated authorized operational-review Clerk subject IDs |
 | `OPENAI_API_KEY`, `USDA_API_KEY` | Backend-only provider keys |
 | `SENTRY_DSN` | HTTPS backend DSN for the production Sentry environment |

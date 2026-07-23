@@ -59,8 +59,6 @@ services:
         sync: false
       - key: CLERK_ISSUER
         sync: false
-      - key: CLERK_AUDIENCE
-        sync: false
 
 databases:
   - name: living-nutrition-preview-postgres

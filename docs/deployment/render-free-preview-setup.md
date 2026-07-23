@@ -25,9 +25,9 @@ It intentionally creates no workers, Key Value instance, Cloudflare R2 bucket, S
 ## Deploy
 
 1. In Render, create a Blueprint from this repository's root `render.yaml`.
-2. Provide `CLERK_JWKS_URL`, `CLERK_ISSUER`, and `CLERK_AUDIENCE` from the Clerk development tenant. Do not enter an OpenAI key for this free preview.
+2. Provide `CLERK_JWKS_URL` and `CLERK_ISSUER` from the Clerk development tenant. Do not enter an OpenAI key for this free preview. Leave `CLERK_AUDIENCE` unset when the mobile app uses Clerk's default session token; configure it only if the app is deliberately changed to request a custom JWT template with an `aud` claim.
 3. Confirm the service and database show the `free` plan before applying the Blueprint.
-4. After deployment, use the generated API URL as `EXPO_PUBLIC_API_URL` for a test mobile build or device configuration.
+4. After deployment, set the generated API URL with its `/api/v1` suffix as `EXPO_PUBLIC_API_BASE_URL` for a test mobile build or device configuration.
 5. Allow for a cold start after inactivity. Retry a request if the service is waking.
 
 Run `render blueprints validate render.yaml` after authenticating the Render CLI and selecting the workspace. It validates the actual Render schema and resource plan before deployment.
