@@ -47,6 +47,10 @@ services:
         value: "true"
       - key: RATE_LIMIT_BACKEND
         value: memory
+      # Search-as-you-type needs headroom for a real phone demo while still
+      # retaining an IP-scoped limit on this single free preview instance.
+      - key: RATE_LIMIT_FOOD_SEARCH_MAX_REQUESTS
+        value: "120"
       - key: NUTRITION_PROVIDER_CIRCUIT_BREAKER_BACKEND
         value: memory
       - key: AUDIT_DELIVERY_BACKEND
